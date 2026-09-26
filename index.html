@@ -101,6 +101,22 @@
       return `${d}/${m}/${y}`;
     };
 
+    const normalizePhone = (phone) => {
+      if (!phone) return "";
+      const digits = String(phone).replace(/\D/g, "");
+      return digits.length >= 10 ? digits.slice(-10) : digits;
+    };
+
+    const formatBirthday = (dateStr) => {
+      if (!dateStr) return "";
+      const parts = dateStr.split("-");
+      if (parts.length < 3) return dateStr;
+      const months = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+      const day = parseInt(parts[2], 10);
+      const month = months[parseInt(parts[1], 10) - 1] || "";
+      return `${day} de ${month}`;
+    };
+
     const copyToClipboard = (text) => {
       if (navigator.clipboard && navigator.clipboard.writeText) {
         return navigator.clipboard.writeText(text);
@@ -187,8 +203,6 @@
       const [tab, setTab] = useState("invoices");
       const [selectedInvoice, setSelectedInvoice] = useState(null);
       const [searchQuery, setSearchQuery] = useState("");
-      
-      // Filtro simplificado a 3 estados: Pendiente por defecto
       const [statusFilter, setStatusFilter] = useState("Pendiente");
       
       const [toastMsg, setToastMsg] = useState("");
@@ -198,10 +212,18 @@
       const [rejectModalOrder, setRejectModalOrder] = useState(null);
       const [rejectionReasonText, setRejectionReasonText] = useState("");
 
+      // Estados de Postres
       const [editingProductId, setEditingProductId] = useState(null);
       const [prodFormName, setProdFormName] = useState("");
       const [prodFormPrice, setProdFormPrice] = useState("");
       const [prodFormImage, setProdFormImage] = useState("");
+
+      // Estados de Clientes
+      const [customerSearch, setCustomerSearch] = useState("");
+      const [editingCustomerId, setEditingCustomerId] = useState(null);
+      const [custFormName, setCustFormName] = useState("");
+      const [custFormPhone, setCustFormPhone] = useState("");
+      const [custFormBirthday, setCustFormBirthday] = useState("");
 
       const prevDraftsCountRef = useRef(0);
 
@@ -233,7 +255,8 @@
           { id: "p4", name: "Pudín Dominicano Decorado", price: 2400, exempt: false, image: "" }
         ],
         invoices: [],
-        drafts: []
+        drafts: [],
+        customers: []
       };
 
       const [state, setState] = useState(() => {
@@ -259,7 +282,10 @@
               }
               prevDraftsCountRef.current = newDraftsCount;
 
-              setState(cloudData);
+              setState({
+                ...cloudData,
+                customers: cloudData.customers || []
+              });
               localStorage.setItem("leross_cloud_cache", JSON.stringify(cloudData));
               setCloudStatus("synced");
             } else {
@@ -300,6 +326,23 @@
         paymentMethod: "Transferencia",
         notes: ""
       });
+
+      // Autocompletado reactivo de clientes al teclear en "Nueva Factura"
+      const customerSuggestions = useMemo(() => {
+        const query = (draft.customerName || "").trim().toLowerCase();
+        if (!query || query.length < 2) return [];
+        return (state.customers || []).filter(c =>
+          c.name.toLowerCase().includes(query) &&
+          c.name.toLowerCase() !== query
+        ).slice(0, 4);
+      }, [draft.customerName, state.customers]);
+
+      // Función para encontrar coincidencia de cliente por teléfono (10 dígitos)
+      const findCustomerByPhone = (rawPhone) => {
+        const norm = normalizePhone(rawPhone);
+        if (!norm || norm.length < 10) return null;
+        return (state.customers || []).find(c => normalizePhone(c.phone) === norm);
+      };
 
       const calculation = useMemo(() => {
         let subtotal = 0;
@@ -347,6 +390,24 @@
         });
       };
 
+      // Iniciar Facturación desde un Pedido Web (Con Auto-Vinculación por Teléfono)
+      const startInvoicingWebOrder = (order) => {
+        setCurrentDraftId(order.id);
+        const matched = findCustomerByPhone(order.customerPhone);
+
+        // Si el teléfono coincide con un cliente existente, se usa el nombre oficial limpio del directorio
+        setDraft({
+          ...order,
+          customerName: matched ? matched.name : order.customerName,
+          customerPhone: matched ? (matched.phone || order.customerPhone) : order.customerPhone
+        });
+
+        setTab("new");
+        if (matched && matched.name.toLowerCase() !== order.customerName.toLowerCase()) {
+          showToast(`Vinculado a ${matched.name}`);
+        }
+      };
+
       const acceptWebOrder = (order) => {
         const totalVal = order.calculation.total || 0;
 
@@ -357,7 +418,25 @@
           return d;
         });
 
-        saveToCloud({ ...state, drafts: updatedDrafts });
+        // Auto-guardado inteligente de clientes sin duplicados
+        let updatedCustomers = [...(state.customers || [])];
+        const orderPhoneNorm = normalizePhone(order.customerPhone);
+        const existingIdx = updatedCustomers.findIndex(c => {
+          const cPhoneNorm = normalizePhone(c.phone);
+          const cNameNorm = c.name.trim().toLowerCase();
+          return (cPhoneNorm && orderPhoneNorm && cPhoneNorm === orderPhoneNorm) || (cNameNorm === order.customerName.trim().toLowerCase());
+        });
+
+        if (existingIdx === -1 && order.customerName.trim()) {
+          updatedCustomers.push({
+            id: "cust_" + Date.now(),
+            name: order.customerName.trim(),
+            phone: order.customerPhone.trim(),
+            birthday: ""
+          });
+        }
+
+        saveToCloud({ ...state, drafts: updatedDrafts, customers: updatedCustomers });
 
         const cleanPhone = (order.customerPhone || "").replace(/\D/g, "");
         const targetPhone = cleanPhone.length === 10 ? "1" + cleanPhone : cleanPhone;
@@ -431,12 +510,40 @@
         };
 
         const filteredDrafts = (state.drafts || []).filter(d => d.id !== currentDraftId);
+
+        // Control de duplicados en Clientes por teléfono o nombre
+        let updatedCustomers = [...(state.customers || [])];
+        const draftPhoneNorm = normalizePhone(draft.customerPhone);
+        const draftNameNorm = draft.customerName.trim().toLowerCase();
+
+        const matchIdx = updatedCustomers.findIndex(c => {
+          const cPhoneNorm = normalizePhone(c.phone);
+          const cNameNorm = c.name.trim().toLowerCase();
+          return (cPhoneNorm && draftPhoneNorm && cPhoneNorm === draftPhoneNorm) || (cNameNorm === draftNameNorm);
+        });
+
+        if (matchIdx >= 0) {
+          updatedCustomers[matchIdx] = {
+            ...updatedCustomers[matchIdx],
+            name: draft.customerName.trim(),
+            phone: draft.customerPhone.trim() || updatedCustomers[matchIdx].phone
+          };
+        } else if (draft.customerName.trim()) {
+          updatedCustomers.push({
+            id: "cust_" + Date.now(),
+            name: draft.customerName.trim(),
+            phone: (draft.customerPhone || "").trim(),
+            birthday: ""
+          });
+        }
+
         saveToCloud({
           ...state,
           counter: state.counter + 1,
           hasIssuedFirst: true,
           invoices: [newInvoice, ...state.invoices],
-          drafts: filteredDrafts
+          drafts: filteredDrafts,
+          customers: updatedCustomers
         });
 
         setSelectedInvoice(newInvoice);
@@ -620,6 +727,72 @@
         }
       };
 
+      const startEditCustomer = (cust) => {
+        setEditingCustomerId(cust.id);
+        setCustFormName(cust.name);
+        setCustFormPhone(cust.phone || "");
+        setCustFormBirthday(cust.birthday || "");
+        showToast(`Editando: ${cust.name}`);
+      };
+
+      const cancelEditCustomer = () => {
+        setEditingCustomerId(null);
+        setCustFormName("");
+        setCustFormPhone("");
+        setCustFormBirthday("");
+      };
+
+      const handleSaveCustomer = () => {
+        if (!custFormName.trim()) {
+          alert("Indica el nombre del cliente.");
+          return;
+        }
+        if (!custFormPhone.trim()) {
+          alert("Indica el número de WhatsApp.");
+          return;
+        }
+
+        const currentList = state.customers || [];
+
+        if (editingCustomerId) {
+          const updated = currentList.map(c => {
+            if (c.id === editingCustomerId) {
+              return {
+                ...c,
+                name: custFormName.trim(),
+                phone: custFormPhone.trim(),
+                birthday: custFormBirthday || ""
+              };
+            }
+            return c;
+          });
+          saveToCloud({ ...state, customers: updated });
+          cancelEditCustomer();
+          showToast("Cliente actualizado");
+        } else {
+          const newCustomer = {
+            id: "cust_" + Date.now(),
+            name: custFormName.trim(),
+            phone: custFormPhone.trim(),
+            birthday: custFormBirthday || ""
+          };
+          saveToCloud({ ...state, customers: [...currentList, newCustomer] });
+          cancelEditCustomer();
+          showToast("Cliente guardado");
+        }
+      };
+
+      const createInvoiceForCustomer = (cust) => {
+        resetDraft();
+        setDraft(prev => ({
+          ...prev,
+          customerName: cust.name,
+          customerPhone: cust.phone || ""
+        }));
+        setTab("new");
+        showToast(`Factura para ${cust.name}`);
+      };
+
       const metrics = useMemo(() => {
         const active = state.invoices.filter(i => i.state !== "Anulada");
         const totalMonth = active.reduce((acc, i) => acc + i.calculation.total, 0);
@@ -636,7 +809,7 @@
             </div>
           )}
 
-          {/* Encabezado Superior */}
+          {/* Encabezado Fijo */}
           <header className="no-print flex-shrink-0 bg-white/95 backdrop-blur-md border-b border-brand-border px-4 py-3 flex items-center justify-between z-20">
             <div className="flex items-center space-x-2.5">
               {state.business.customLogo ? (
@@ -665,10 +838,10 @@
             )}
           </header>
 
-          {/* Contenido Central */}
+          {/* Contenido Central con Scroll */}
           <main className="flex-1 overflow-y-auto p-4 space-y-4 overscroll-contain">
             
-            {/* VISTA 1: HISTORIAL DE FACTURAS */}
+            {/* VISTA 1: HISTORIAL DE FACTURAS Y PEDIDOS WEB */}
             {tab === "invoices" && (
               <div className="space-y-4 pb-2">
                 <div className="grid grid-cols-2 gap-3">
@@ -682,7 +855,7 @@
                   </div>
                 </div>
 
-                {/* Pedidos Web Entrantes */}
+                {/* Pedidos Web Entrantes con Detección Automática de Cliente */}
                 {(state.drafts && state.drafts.length > 0) && (
                   <div className="space-y-2.5">
                     <div className="flex justify-between items-center">
@@ -696,6 +869,9 @@
                       const isPending = !order.approvalStatus || order.approvalStatus === "Pendiente";
                       const isAccepted = order.approvalStatus === "Aceptada";
                       const isRejected = order.approvalStatus === "Rechazada";
+                      
+                      // Detección por teléfono
+                      const matchedCust = findCustomerByPhone(order.customerPhone);
 
                       return (
                         <div
@@ -716,6 +892,17 @@
                                   </span>
                                 )}
                               </div>
+
+                              {/* Distintivo de Cliente Existente Detectado */}
+                              {matchedCust && (
+                                <div className="mt-0.5 text-[11px] text-brand-darkPink font-medium flex items-center space-x-1">
+                                  <span>👤 Cliente en directorio: <b>{matchedCust.name}</b></span>
+                                  {matchedCust.name.toLowerCase() !== order.customerName.toLowerCase() && (
+                                    <span className="text-[10px] text-gray-400 italic">(nombre web: "{order.customerName}")</span>
+                                  )}
+                                </div>
+                              )}
+
                               <p className="text-xs text-brand-darkPink font-medium mt-0.5">
                                 Entrega: <b>{order.deliveryDate || formatDate(order.date)}</b>
                               </p>
@@ -757,11 +944,7 @@
                                   ✓ Confirmada (Plazo: 3h)
                                 </span>
                                 <button
-                                  onClick={() => {
-                                    setCurrentDraftId(order.id);
-                                    setDraft(order);
-                                    setTab("new");
-                                  }}
+                                  onClick={() => startInvoicingWebOrder(order)}
                                   className="bg-brand-pink text-white text-xs font-bold px-3 py-1.5 rounded-xl shadow-sm"
                                 >
                                   Facturar
@@ -787,7 +970,7 @@
                   </div>
                 )}
 
-                {/* Filtro y Búsqueda (3 OPCIONES EXACTAS) */}
+                {/* Filtro y Búsqueda (3 Opciones: Pendientes, Pagadas, Anuladas) */}
                 <div className="pt-1">
                   <div className="flex space-x-2 mb-2.5">
                     <input
@@ -808,16 +991,13 @@
                     </select>
                   </div>
 
-                  {/* Lista de Facturas Filtrada */}
                   <div className="space-y-2.5">
                     {state.invoices
                       .filter(inv => {
                         const matchesSearch = inv.customerName.toLowerCase().includes(searchQuery.toLowerCase()) || inv.number.toLowerCase().includes(searchQuery.toLowerCase());
-                        
                         const matchesStatus = statusFilter === "Anulada"
                           ? inv.state === "Anulada"
                           : (inv.state !== "Anulada" && inv.paymentStatus === statusFilter);
-                        
                         return matchesSearch && matchesStatus;
                       })
                       .map(inv => (
@@ -855,7 +1035,7 @@
               </div>
             )}
 
-            {/* VISTA 2: NUEVA FACTURA */}
+            {/* VISTA 2: NUEVA FACTURA (CON AUTOCOMPLETADO Y VINCULACIÓN) */}
             {tab === "new" && (
               <div className="space-y-4 pb-2">
                 <div className="flex justify-between items-center">
@@ -865,17 +1045,47 @@
                   <button onClick={resetDraft} className="text-xs text-gray-400 hover:text-brand-darkPink">Limpiar</button>
                 </div>
                 
-                <div className="bg-brand-softBg p-3.5 rounded-2xl border border-brand-border space-y-3">
+                <div className="bg-brand-softBg p-3.5 rounded-2xl border border-brand-border space-y-3 relative">
                   <div>
-                    <label className="text-xs font-semibold text-gray-500 block mb-1">Cliente</label>
+                    <div className="flex justify-between items-center mb-1">
+                      <label className="text-xs font-semibold text-gray-500">Cliente *</label>
+                      {(state.customers && state.customers.length > 0) && (
+                        <span className="text-[10px] text-brand-darkPink font-medium">Autocompletado activo</span>
+                      )}
+                    </div>
                     <input
                       type="text"
-                      placeholder="Nombre completo"
+                      placeholder="Empieza a escribir el nombre..."
                       value={draft.customerName}
                       onChange={e => setDraft({ ...draft, customerName: e.target.value })}
                       className="w-full bg-white border border-brand-border rounded-xl px-3 py-2 text-sm outline-none focus:border-brand-pink"
                     />
+
+                    {/* Sugerencias de Autocompletado */}
+                    {customerSuggestions.length > 0 && (
+                      <div className="mt-1 bg-white border border-brand-border rounded-xl shadow-md p-1.5 space-y-1 animate-in fade-in duration-150">
+                        <span className="text-[10px] font-bold text-gray-400 px-2 block uppercase">Coincidencia en directorio:</span>
+                        {customerSuggestions.map(cust => (
+                          <div
+                            key={cust.id}
+                            onClick={() => {
+                              setDraft({
+                                ...draft,
+                                customerName: cust.name,
+                                customerPhone: cust.phone || draft.customerPhone
+                              });
+                              showToast(`Cliente seleccionado: ${cust.name}`);
+                            }}
+                            className="px-2.5 py-1.5 hover:bg-brand-softPink rounded-lg cursor-pointer flex justify-between items-center transition-colors"
+                          >
+                            <span className="text-xs font-semibold text-brand-charcoal">{cust.name}</span>
+                            <span className="text-[11px] text-gray-500">{cust.phone}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
+
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label className="text-xs font-semibold text-gray-500 block mb-1">WhatsApp</label>
@@ -899,6 +1109,7 @@
                   </div>
                 </div>
 
+                {/* Postres */}
                 <div className="space-y-2">
                   <div className="flex justify-between items-center">
                     <label className="text-xs font-bold text-brand-charcoal uppercase tracking-wider">Postres</label>
@@ -1052,145 +1263,165 @@
               </div>
             )}
 
-            {/* VISTA 3: FACTURA OFICIAL */}
-            {tab === "view" && selectedInvoice && (
+            {/* VISTA 3: CLIENTES */}
+            {tab === "customers" && (
               <div className="space-y-4 pb-2">
-                <div className="no-print flex space-x-2">
-                  <button
-                    onClick={() => handlePrintOrPdf(selectedInvoice)}
-                    disabled={isGeneratingPdf}
-                    className="flex-1 bg-brand-charcoal text-white font-bold py-2.5 rounded-xl text-xs flex items-center justify-center space-x-1.5 shadow-sm active:scale-95 transition-all disabled:opacity-50"
-                  >
-                    <span>{isGeneratingPdf ? "⏳ Generando..." : "🖨 Imprimir / PDF"}</span>
-                  </button>
-                  <button
-                    onClick={() => shareWhatsApp(selectedInvoice)}
-                    className="flex-1 bg-emerald-600 text-white font-bold py-2.5 rounded-xl text-xs flex items-center justify-center space-x-1 shadow-sm active:scale-95 transition-all"
-                  >
-                    <span>💬 WhatsApp</span>
-                  </button>
-                </div>
-
-                <div id="print-area" className="bg-white p-6 rounded-2xl border border-brand-border shadow-sm space-y-5 text-brand-charcoal">
-                  <div className="flex justify-between items-start border-b border-brand-border pb-4">
-                    <div className="flex items-center space-x-3.5">
-                      {state.business.customLogo ? (
-                        <div className="max-h-20 max-w-[130px] flex items-center justify-center">
-                          <img 
-                            src={state.business.customLogo} 
-                            alt="Logo" 
-                            className="max-h-20 max-w-[130px] w-auto h-auto object-contain rounded-xl" 
-                          />
-                        </div>
-                      ) : (
-                        <LeRossBadge size={54} />
-                      )}
-                      <div>
-                        <h1 className="font-serif text-xl font-bold text-brand-darkPink leading-tight">{state.business.name}</h1>
-                        <p className="text-xs text-gray-500">{state.business.address}</p>
-                        <p className="text-xs text-gray-500">{state.business.phone}</p>
-                        {state.business.instagram && <p className="text-xs text-brand-darkPink font-medium">{state.business.instagram}</p>}
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 block">Factura</span>
-                      <span className="text-base font-bold text-brand-charcoal">{selectedInvoice.number}</span>
-                      <p className="text-xs text-gray-400">{formatDate(selectedInvoice.date)}</p>
-                    </div>
+                <div className="flex justify-between items-center">
+                  <div>
+                    <h2 className="text-base font-bold text-brand-charcoal">Directorio de Clientes</h2>
+                    <p className="text-[11px] text-gray-400 font-medium">{(state.customers || []).length} clientes guardados</p>
                   </div>
-
-                  <div className="bg-brand-softBg p-3 rounded-xl text-xs space-y-0.5">
-                    <span className="text-gray-400 uppercase tracking-wider text-[10px] block font-bold">Cliente</span>
-                    <p className="font-bold text-sm text-brand-charcoal">{selectedInvoice.customerName}</p>
-                    {selectedInvoice.customerPhone && <p className="text-gray-500">{selectedInvoice.customerPhone}</p>}
-                  </div>
-
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="border-b border-brand-border text-gray-400 text-[10px] uppercase font-bold text-left">
-                        <th className="py-1">Descripción</th>
-                        <th className="py-1 text-center">Cant.</th>
-                        <th className="py-1 text-right">Precio</th>
-                        <th className="py-1 text-right">Total</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-brand-softBg">
-                      {selectedInvoice.calculation.lines.map((l, i) => (
-                        <tr key={i}>
-                          <td className="py-2.5 font-medium">{l.name}</td>
-                          <td className="py-2.5 text-center text-gray-500">{l.quantity}</td>
-                          <td className="py-2.5 text-right text-gray-500">{formatRD(l.unitPrice)}</td>
-                          <td className="py-2.5 text-right font-bold text-brand-charcoal">{formatRD(l.lineTotal)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-
-                  <div className="border-t border-brand-border pt-3 space-y-1 text-xs">
-                    <div className="flex justify-between text-gray-500">
-                      <span>Subtotal</span>
-                      <span>{formatRD(selectedInvoice.calculation.subtotal)}</span>
-                    </div>
-                    {state.taxSettings.applyITBIS && (
-                      <div className="flex justify-between text-gray-500">
-                        <span>ITBIS</span>
-                        <span>{formatRD(selectedInvoice.calculation.itbis)}</span>
-                      </div>
-                    )}
-                    <div className="flex justify-between text-lg font-bold text-brand-darkPink pt-1">
-                      <span>Total</span>
-                      <span>{formatRD(selectedInvoice.calculation.total)}</span>
-                    </div>
-                  </div>
-
-                  <div className="pt-2 border-t border-brand-border text-xs space-y-2">
-                    <div className="flex justify-between items-center">
-                      <span className="text-gray-400">Estado:</span>
-                      <span className="font-bold">{selectedInvoice.paymentStatus} ({selectedInvoice.paymentMethod})</span>
-                    </div>
-                    {selectedInvoice.paymentStatus === 'Pendiente' && state.business.paymentInstructions && (
-                      <div className="p-2.5 bg-brand-softBg rounded-xl text-[11px] whitespace-pre-line text-gray-600 border border-brand-border/60">
-                        {state.business.paymentInstructions}
-                      </div>
-                    )}
-                    <p className="text-center text-gray-400 text-[11px] italic pt-2">{state.business.footerMsg}</p>
-                  </div>
-
-                  {selectedInvoice.state === "Anulada" && (
-                    <div className="p-2.5 text-center bg-rose-50 text-rose-600 font-bold rounded-xl text-xs uppercase tracking-wider border border-rose-200">
-                      Factura Anulada
-                    </div>
+                  {editingCustomerId && (
+                    <button onClick={cancelEditCustomer} className="text-xs text-gray-400 hover:text-brand-charcoal underline">
+                      Cancelar edición
+                    </button>
                   )}
                 </div>
 
-                <div className="no-print space-y-2 pt-2">
-                  <div className="flex space-x-2">
-                    {selectedInvoice.state !== "Anulada" ? (
-                      <>
-                        {selectedInvoice.paymentStatus === "Pendiente" && (
-                          <button
-                            onClick={() => markAsPaid(selectedInvoice.id)}
-                            className="flex-1 bg-emerald-50 text-emerald-600 py-2.5 rounded-xl text-xs font-bold border border-emerald-200 active:scale-95"
-                          >
-                            Marcar como Pagada
-                          </button>
-                        )}
-                        <button
-                          onClick={() => voidInvoice(selectedInvoice.id)}
-                          className="text-xs text-rose-500 py-2.5 px-4 rounded-xl border border-rose-200 hover:bg-rose-50 font-bold active:scale-95"
-                        >
-                          Anular Factura
-                        </button>
-                      </>
-                    ) : (
+                {/* Formulario Conciso: Crear o Editar */}
+                <div className={`p-4 bg-white border rounded-2xl space-y-3 shadow-xs ${editingCustomerId ? 'border-brand-pink ring-1 ring-brand-pink/30' : 'border-brand-border'}`}>
+                  <span className="text-xs font-bold text-brand-charcoal block">
+                    {editingCustomerId ? "✏️ Modificar Cliente" : "➕ Añadir Nuevo Cliente"}
+                  </span>
+
+                  <div>
+                    <label className="text-[11px] font-semibold text-gray-500 block mb-1">Nombre Completo *</label>
+                    <input 
+                      placeholder="Ej. Carmen Rosario" 
+                      value={custFormName}
+                      onChange={e => setCustFormName(e.target.value)}
+                      className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs outline-none focus:border-brand-pink" 
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[11px] font-semibold text-gray-500 block mb-1">WhatsApp / Teléfono *</label>
+                      <input 
+                        type="tel"
+                        placeholder="829-000-0000" 
+                        value={custFormPhone}
+                        onChange={e => setCustFormPhone(e.target.value)}
+                        className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs outline-none focus:border-brand-pink" 
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold text-gray-500 block mb-1">Cumpleaños (Opcional)</label>
+                      <input 
+                        type="date"
+                        value={custFormBirthday}
+                        onChange={e => setCustFormBirthday(e.target.value)}
+                        className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs outline-none focus:border-brand-pink text-gray-600" 
+                      />
+                    </div>
+                  </div>
+
+                  <div className="pt-1 flex space-x-2">
+                    {editingCustomerId && (
                       <button
-                        onClick={() => permanentlyDeleteInvoice(selectedInvoice.id)}
-                        className="w-full py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-sm active:scale-95"
+                        type="button"
+                        onClick={cancelEditCustomer}
+                        className="w-1/3 bg-gray-100 hover:bg-gray-200 text-gray-600 text-xs font-bold py-2.5 rounded-xl"
                       >
-                        🗑️ Eliminar Definitivamente
+                        Cancelar
                       </button>
                     )}
+                    <button
+                      type="button"
+                      onClick={handleSaveCustomer}
+                      className="flex-1 bg-brand-pink hover:bg-brand-darkPink text-white text-xs font-bold py-2.5 rounded-xl shadow-sm transition-all active:scale-[0.99]"
+                    >
+                      {editingCustomerId ? "Actualizar Cliente" : "Guardar Cliente"}
+                    </button>
                   </div>
+                </div>
+
+                {/* Búsqueda de Clientes */}
+                <div>
+                  <input
+                    type="text"
+                    placeholder="Buscar cliente por nombre o teléfono..."
+                    value={customerSearch}
+                    onChange={e => setCustomerSearch(e.target.value)}
+                    className="w-full text-xs bg-brand-softBg border border-brand-border rounded-xl px-3 py-2.5 outline-none focus:border-brand-pink"
+                  />
+                </div>
+
+                {/* Lista de Clientes */}
+                <div className="space-y-2.5">
+                  {(state.customers || [])
+                    .filter(c => 
+                      c.name.toLowerCase().includes(customerSearch.toLowerCase()) || 
+                      (c.phone && c.phone.includes(customerSearch))
+                    )
+                    .map(cust => (
+                      <div 
+                        key={cust.id} 
+                        className={`p-3.5 bg-white rounded-2xl border transition-all shadow-xs flex items-center justify-between ${editingCustomerId === cust.id ? 'border-brand-pink ring-2 ring-brand-pink/20 bg-brand-softPink/20' : 'border-brand-border'}`}
+                      >
+                        <div className="flex-1 min-w-0 pr-2">
+                          <h4 className="font-bold text-sm text-brand-charcoal truncate">{cust.name}</h4>
+                          <div className="flex items-center space-x-2 mt-0.5">
+                            <span className="text-xs text-gray-500">{cust.phone || "Sin teléfono"}</span>
+                            {cust.birthday && (
+                              <span className="text-[10px] bg-brand-softPink text-brand-darkPink font-semibold px-2 py-0.5 rounded-full border border-brand-pink/30">
+                                🎂 {formatBirthday(cust.birthday)}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center space-x-1.5 flex-shrink-0">
+                          {cust.phone && (
+                            <a
+                              href={`https://wa.me/${cust.phone.replace(/\D/g,'').length === 10 ? '1' + cust.phone.replace(/\D/g,'') : cust.phone.replace(/\D/g,'')}`}
+                              target="_blank"
+                              className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 border border-emerald-200 flex items-center justify-center text-xs shadow-xs"
+                              title="Chatear por WhatsApp"
+                            >
+                              💬
+                            </a>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => createInvoiceForCustomer(cust)}
+                            className="px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-brand-softBg text-brand-darkPink border border-brand-pink/30 hover:bg-brand-softPink shadow-xs"
+                            title="Crear Factura"
+                          >
+                            + Facturar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => startEditCustomer(cust)}
+                            className="p-1.5 text-gray-400 hover:text-brand-darkPink"
+                            title="Editar"
+                          >
+                            ✏️
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (confirm(`¿Eliminar a ${cust.name} de tus clientes?`)) {
+                                const updated = (state.customers || []).filter(c => c.id !== cust.id);
+                                saveToCloud({ ...state, customers: updated });
+                                if (editingCustomerId === cust.id) cancelEditCustomer();
+                                showToast("Cliente eliminado");
+                              }
+                            }}
+                            className="p-1.5 text-gray-400 hover:text-rose-500"
+                            title="Eliminar"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+
+                  {(state.customers || []).length === 0 && (
+                    <div className="text-center py-10 text-gray-400 text-xs">
+                      No hay clientes guardados aún.<br/>Agrega uno arriba o se guardarán solos al emitir facturas.
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -1413,9 +1644,152 @@
                 </div>
               </div>
             )}
+
+            {/* VISTA 6: DETALLE DE FACTURA EMITIDA */}
+            {tab === "view" && selectedInvoice && (
+              <div className="space-y-4 pb-2">
+                <div className="no-print flex space-x-2">
+                  <button
+                    onClick={() => handlePrintOrPdf(selectedInvoice)}
+                    disabled={isGeneratingPdf}
+                    className="flex-1 bg-brand-charcoal text-white font-bold py-2.5 rounded-xl text-xs flex items-center justify-center space-x-1.5 shadow-sm active:scale-95 transition-all disabled:opacity-50"
+                  >
+                    <span>{isGeneratingPdf ? "⏳ Generando..." : "🖨 Imprimir / PDF"}</span>
+                  </button>
+                  <button
+                    onClick={() => shareWhatsApp(selectedInvoice)}
+                    className="flex-1 bg-emerald-600 text-white font-bold py-2.5 rounded-xl text-xs flex items-center justify-center space-x-1 shadow-sm active:scale-95 transition-all"
+                  >
+                    <span>💬 WhatsApp</span>
+                  </button>
+                </div>
+
+                <div id="print-area" className="bg-white p-6 rounded-2xl border border-brand-border shadow-sm space-y-5 text-brand-charcoal">
+                  <div className="flex justify-between items-start border-b border-brand-border pb-4">
+                    <div className="flex items-center space-x-3.5">
+                      {state.business.customLogo ? (
+                        <div className="max-h-20 max-w-[130px] flex items-center justify-center">
+                          <img 
+                            src={state.business.customLogo} 
+                            alt="Logo" 
+                            className="max-h-20 max-w-[130px] w-auto h-auto object-contain rounded-xl" 
+                          />
+                        </div>
+                      ) : (
+                        <LeRossBadge size={54} />
+                      )}
+                      <div>
+                        <h1 className="font-serif text-xl font-bold text-brand-darkPink leading-tight">{state.business.name}</h1>
+                        <p className="text-xs text-gray-500">{state.business.address}</p>
+                        <p className="text-xs text-gray-500">{state.business.phone}</p>
+                        {state.business.instagram && <p className="text-xs text-brand-darkPink font-medium">{state.business.instagram}</p>}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 block">Factura</span>
+                      <span className="text-base font-bold text-brand-charcoal">{selectedInvoice.number}</span>
+                      <p className="text-xs text-gray-400">{formatDate(selectedInvoice.date)}</p>
+                    </div>
+                  </div>
+
+                  <div className="bg-brand-softBg p-3 rounded-xl text-xs space-y-0.5">
+                    <span className="text-gray-400 uppercase tracking-wider text-[10px] block font-bold">Cliente</span>
+                    <p className="font-bold text-sm text-brand-charcoal">{selectedInvoice.customerName}</p>
+                    {selectedInvoice.customerPhone && <p className="text-gray-500">{selectedInvoice.customerPhone}</p>}
+                  </div>
+
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-brand-border text-gray-400 text-[10px] uppercase font-bold text-left">
+                        <th className="py-1">Descripción</th>
+                        <th className="py-1 text-center">Cant.</th>
+                        <th className="py-1 text-right">Precio</th>
+                        <th className="py-1 text-right">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-brand-softBg">
+                      {selectedInvoice.calculation.lines.map((l, i) => (
+                        <tr key={i}>
+                          <td className="py-2.5 font-medium">{l.name}</td>
+                          <td className="py-2.5 text-center text-gray-500">{l.quantity}</td>
+                          <td className="py-2.5 text-right text-gray-500">{formatRD(l.unitPrice)}</td>
+                          <td className="py-2.5 text-right font-bold text-brand-charcoal">{formatRD(l.lineTotal)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+
+                  <div className="border-t border-brand-border pt-3 space-y-1 text-xs">
+                    <div className="flex justify-between text-gray-500">
+                      <span>Subtotal</span>
+                      <span>{formatRD(selectedInvoice.calculation.subtotal)}</span>
+                    </div>
+                    {state.taxSettings.applyITBIS && (
+                      <div className="flex justify-between text-gray-500">
+                        <span>ITBIS</span>
+                        <span>{formatRD(selectedInvoice.calculation.itbis)}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between text-lg font-bold text-brand-darkPink pt-1">
+                      <span>Total</span>
+                      <span>{formatRD(selectedInvoice.calculation.total)}</span>
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-brand-border text-xs space-y-2">
+                    <div className="flex justify-between items-center">
+                      <span className="text-gray-400">Estado:</span>
+                      <span className="font-bold">{selectedInvoice.paymentStatus} ({selectedInvoice.paymentMethod})</span>
+                    </div>
+                    {selectedInvoice.paymentStatus === 'Pendiente' && state.business.paymentInstructions && (
+                      <div className="p-2.5 bg-brand-softBg rounded-xl text-[11px] whitespace-pre-line text-gray-600 border border-brand-border/60">
+                        {state.business.paymentInstructions}
+                      </div>
+                    )}
+                    <p className="text-center text-gray-400 text-[11px] italic pt-2">{state.business.footerMsg}</p>
+                  </div>
+
+                  {selectedInvoice.state === "Anulada" && (
+                    <div className="p-2.5 text-center bg-rose-50 text-rose-600 font-bold rounded-xl text-xs uppercase tracking-wider border border-rose-200">
+                      Factura Anulada
+                    </div>
+                  )}
+                </div>
+
+                <div className="no-print space-y-2 pt-2">
+                  <div className="flex space-x-2">
+                    {selectedInvoice.state !== "Anulada" ? (
+                      <>
+                        {selectedInvoice.paymentStatus === "Pendiente" && (
+                          <button
+                            onClick={() => markAsPaid(selectedInvoice.id)}
+                            className="flex-1 bg-emerald-50 text-emerald-600 py-2.5 rounded-xl text-xs font-bold border border-emerald-200 active:scale-95"
+                          >
+                            Marcar como Pagada
+                          </button>
+                        )}
+                        <button
+                          onClick={() => voidInvoice(selectedInvoice.id)}
+                          className="text-xs text-rose-500 py-2.5 px-4 rounded-xl border border-rose-200 hover:bg-rose-50 font-bold active:scale-95"
+                        >
+                          Anular Factura
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        onClick={() => permanentlyDeleteInvoice(selectedInvoice.id)}
+                        className="w-full py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-sm active:scale-95"
+                      >
+                        🗑️ Eliminar Definitivamente
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </main>
 
-          {/* Modal Rechazo */}
+          {/* Modal Rechazo Pedido */}
           {rejectModalOrder && (
             <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
               <div className="bg-white rounded-3xl p-5 w-full max-w-sm space-y-3.5 shadow-2xl">
@@ -1471,7 +1845,7 @@
             </div>
           )}
 
-          {/* Barra de Navegación Inferior Fija */}
+          {/* Barra de Navegación Fija */}
           <nav className="no-print flex-shrink-0 bg-white/95 backdrop-blur-md border-t border-brand-border flex justify-around py-2.5 pb-[max(0.6rem,env(safe-area-inset-bottom))] z-30 shadow-lg">
             <button
               onClick={() => setTab("invoices")}
@@ -1489,6 +1863,13 @@
             >
               <span className="text-lg">➕</span>
               Nueva
+            </button>
+            <button
+              onClick={() => setTab("customers")}
+              className={`flex flex-col items-center text-[10px] font-bold ${tab === 'customers' ? 'text-brand-darkPink' : 'text-gray-400'}`}
+            >
+              <span className="text-lg">👥</span>
+              Clientes
             </button>
             <button
               onClick={() => setTab("products")}
