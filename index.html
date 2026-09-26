@@ -41,6 +41,9 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 
+  <!-- html2pdf Engine (Fixes iOS PWA Printing & Generates True PDF) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+
   <script>
     // Configuración oficial de LeRoss Bakery en Firebase
     const firebaseConfig = {
@@ -71,19 +74,12 @@
       user-select: none;
     }
     input, textarea, select { user-select: auto; }
+    
     @media print {
-      body * { visibility: hidden; }
-      #print-area, #print-area * { visibility: visible; }
-      #print-area {
-        position: absolute;
-        left: 0;
-        top: 0;
-        width: 100%;
-        margin: 0;
-        padding: 24px;
-        background: white !important;
-      }
-      .no-print { display: none !important; }
+      .no-print, header, nav { display: none !important; }
+      body, html { background: white !important; margin: 0 !important; padding: 0 !important; }
+      #root, .max-w-md, main { max-width: 100% !important; margin: 0 !important; padding: 0 !important; box-shadow: none !important; border: none !important; }
+      #print-area { display: block !important; width: 100% !important; padding: 20px !important; border: none !important; box-shadow: none !important; }
     }
   </style>
 </head>
@@ -116,7 +112,6 @@
       return Promise.resolve();
     };
 
-    // Compresor automático de fotos del carrete (previene saturar almacenamiento)
     const compressImage = (file, maxWidth = 250, maxHeight = 250) => {
       return new Promise((resolve) => {
         const reader = new FileReader();
@@ -171,6 +166,7 @@
       const [statusFilter, setStatusFilter] = useState("all");
       const [toastMsg, setToastMsg] = useState("");
       const [cloudStatus, setCloudStatus] = useState("connecting");
+      const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
 
       const showToast = (msg) => {
         setToastMsg(msg);
@@ -208,7 +204,6 @@
         return local ? JSON.parse(local) : defaultState;
       });
 
-      // Sincronización en tiempo real con Firestore
       useEffect(() => {
         if (!db) {
           setCloudStatus("local");
@@ -351,7 +346,7 @@
 
         setSelectedInvoice(newInvoice);
         setTab("view");
-        showToast(`Factura ${invoiceNumber} emitida y sincronizada`);
+        showToast(`Factura ${invoiceNumber} emitida`);
       };
 
       const voidInvoice = (invId) => {
@@ -400,6 +395,54 @@
         window.open(url, "_blank");
       };
 
+      // Solución definitiva para Imprimir / Generar PDF en iOS, Android y PC
+      const handlePrintOrPdf = async (inv) => {
+        const element = document.getElementById("print-area");
+        if (!element) return;
+
+        setIsGeneratingPdf(true);
+        showToast("Preparando PDF...");
+
+        const opt = {
+          margin: [8, 8, 8, 8],
+          filename: `${inv.number || 'Factura'}.pdf`,
+          image: { type: 'jpeg', quality: 0.98 },
+          html2canvas: { scale: 2.5, useCORS: true, logging: false },
+          jsPDF: { unit: 'mm', format: 'letter', orientation: 'portrait' }
+        };
+
+        try {
+          if (window.html2pdf) {
+            const worker = window.html2pdf().set(opt).from(element);
+            const pdfBlob = await worker.outputPdf('blob');
+            const pdfFile = new File([pdfBlob], `${inv.number}.pdf`, { type: 'application/pdf' });
+
+            // Si es un celular o tablet con menú nativo de compartir
+            if (navigator.canShare && navigator.canShare({ files: [pdfFile] })) {
+              await navigator.share({
+                files: [pdfFile],
+                title: `${inv.number} - LeRoss Bakery`,
+                text: `Factura ${inv.number}`
+              });
+              showToast("PDF listo");
+            } else {
+              // Descarga directa para computadoras
+              await window.html2pdf().set(opt).from(element).save();
+              showToast("PDF descargado en el equipo");
+            }
+          } else {
+            window.print();
+          }
+        } catch (err) {
+          if (err.name !== 'AbortError') {
+            console.error("PDF error:", err);
+            window.print();
+          }
+        } finally {
+          setIsGeneratingPdf(false);
+        }
+      };
+
       const handleLogoUpload = async (e) => {
         const file = e.target.files[0];
         if (!file) return;
@@ -424,7 +467,7 @@
             </div>
           )}
 
-          {/* Encabezado con estado de la Nube */}
+          {/* Encabezado */}
           <header className="no-print bg-white/95 backdrop-blur-md border-b border-brand-border px-4 py-3 flex items-center justify-between sticky top-0 z-20">
             <div className="flex items-center space-x-2.5">
               {state.business.customLogo ? (
@@ -600,7 +643,6 @@
                   </div>
                 </div>
 
-                {/* Renglones */}
                 <div className="space-y-2">
                   <div className="flex justify-between items-center">
                     <label className="text-xs font-bold text-brand-charcoal uppercase tracking-wider">Postres</label>
@@ -768,14 +810,15 @@
               <div className="space-y-4">
                 <div className="no-print flex space-x-2">
                   <button
-                    onClick={() => window.print()}
-                    className="flex-1 bg-brand-charcoal text-white font-bold py-2.5 rounded-xl text-xs flex items-center justify-center space-x-1 shadow-sm"
+                    onClick={() => handlePrintOrPdf(selectedInvoice)}
+                    disabled={isGeneratingPdf}
+                    className="flex-1 bg-brand-charcoal text-white font-bold py-2.5 rounded-xl text-xs flex items-center justify-center space-x-1.5 shadow-sm active:scale-95 transition-all disabled:opacity-50"
                   >
-                    <span>🖨 Imprimir / PDF</span>
+                    <span>{isGeneratingPdf ? "⏳ Generando..." : "🖨 Imprimir / PDF"}</span>
                   </button>
                   <button
                     onClick={() => shareWhatsApp(selectedInvoice)}
-                    className="flex-1 bg-emerald-600 text-white font-bold py-2.5 rounded-xl text-xs flex items-center justify-center space-x-1 shadow-sm"
+                    className="flex-1 bg-emerald-600 text-white font-bold py-2.5 rounded-xl text-xs flex items-center justify-center space-x-1 shadow-sm active:scale-95 transition-all"
                   >
                     <span>💬 WhatsApp</span>
                   </button>
