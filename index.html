@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>LeRoss Bakery — Facturación en la Nube</title>
+  <title>LeRoss Bakery — Facturación</title>
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="LeRoss">
@@ -86,7 +86,7 @@
   <div id="root"></div>
 
   <script type="text/babel">
-    const { useState, useEffect, useMemo } = React;
+    const { useState, useEffect, useMemo, useRef } = React;
 
     const formatRD = (val) => "RD$ " + Number(val || 0).toLocaleString("es-DO", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const formatDate = (dateStr) => {
@@ -111,7 +111,26 @@
       return Promise.resolve();
     };
 
-    // Compresor de fotos de alta fidelidad que preserva proporción y transparencia
+    // Sintetizador de sonido de notificación (campanilla sin depender de archivos de audio externos)
+    const playNotificationSound = () => {
+      try {
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(880, audioCtx.currentTime); // Nota La5
+        osc.frequency.exponentialRampToValueAtTime(1320, audioCtx.currentTime + 0.15); // Nota Mi6
+        gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.6);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.6);
+      } catch (e) {
+        console.log("Audio contextual en espera de interacción.");
+      }
+    };
+
     const compressImage = (file, maxWidth = 500, maxHeight = 500) => {
       return new Promise((resolve) => {
         const reader = new FileReader();
@@ -171,6 +190,12 @@
       const [cloudStatus, setCloudStatus] = useState("connecting");
       const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
 
+      // Estado para modal de rechazo de pedido
+      const [rejectModalOrder, setRejectModalOrder] = useState(null);
+      const [rejectionReasonText, setRejectionReasonText] = useState("");
+
+      const prevDraftsCountRef = useRef(0);
+
       const showToast = (msg) => {
         setToastMsg(msg);
         setTimeout(() => setToastMsg(""), 3000);
@@ -207,6 +232,7 @@
         return local ? JSON.parse(local) : defaultState;
       });
 
+      // Sincronización en tiempo real y detector de nuevos pedidos web
       useEffect(() => {
         if (!db) {
           setCloudStatus("local");
@@ -217,6 +243,15 @@
           (doc) => {
             if (doc.exists) {
               const cloudData = doc.data();
+              
+              // Si entra un nuevo pedido web, sonar alerta sonora
+              const newDraftsCount = (cloudData.drafts || []).length;
+              if (prevDraftsCountRef.current > 0 && newDraftsCount > prevDraftsCountRef.current) {
+                playNotificationSound();
+                showToast("🔔 ¡Nuevo pedido web recibido!");
+              }
+              prevDraftsCountRef.current = newDraftsCount;
+
               setState(cloudData);
               localStorage.setItem("leross_cloud_cache", JSON.stringify(cloudData));
               setCloudStatus("synced");
@@ -263,7 +298,7 @@
         let subtotal = 0;
         let taxableSubtotal = 0;
 
-        const calculatedLines = draft.items.map(item => {
+        const calculatedLines = (draft.items || []).map(item => {
           const raw = Number(item.quantity || 0) * Number(item.unitPrice || 0);
           let disc = item.discountType === "percent"
             ? raw * (Number(item.discountVal || 0) / 100)
@@ -305,17 +340,74 @@
         });
       };
 
-      const saveDraftRecord = () => {
-        if (!draft.customerName.trim()) {
-          alert("Indique el nombre del cliente para guardar el borrador.");
-          return;
-        }
-        const draftId = currentDraftId || ("draft_" + Date.now());
-        const draftRecord = { ...draft, id: draftId, state: "Borrador", calculation, updatedAt: new Date().toISOString() };
-        
-        const filtered = (state.drafts || []).filter(d => d.id !== draftId);
-        saveToCloud({ ...state, drafts: [draftRecord, ...filtered] });
-        showToast("Borrador guardado");
+      // ACCIÓN: Aceptar Pedido Web
+      const acceptWebOrder = (order) => {
+        const depositReq = order.depositRequired || Math.round((order.calculation.total || 0) * 0.5);
+        const remaining = (order.calculation.total || 0) - depositReq;
+
+        const updatedDrafts = (state.drafts || []).map(d => {
+          if (d.id === order.id) {
+            return { ...d, approvalStatus: "Aceptada" };
+          }
+          return d;
+        });
+
+        saveToCloud({ ...state, drafts: updatedDrafts });
+
+        // Redactar mensaje de aceptación para WhatsApp
+        const cleanPhone = (order.customerPhone || "").replace(/\D/g, "");
+        const targetPhone = cleanPhone.length === 10 ? "1" + cleanPhone : cleanPhone;
+
+        const waMsg = `🧁 *¡Hola, ${order.customerName}!* Te confirmamos con gusto de *LeRoss Bakery*.\n\n` +
+          `✅ Tu pedido *#${order.orderNumber || 'Web'}* está *CONFIRMADO* para la fecha: *${order.deliveryDate || 'solicitada'}*.\n\n` +
+          `📋 *Detalle del Anticipo:*\n` +
+          `• Total de la orden: *${formatRD(order.calculation.total)}*\n` +
+          `• *Anticipo a transferir (50%): ${formatRD(depositReq)}*\n` +
+          `• Saldo contra entrega: ${formatRD(remaining)}\n\n` +
+          `⏳ *Plazo de Reserva:* Dispones de *6 horas* para enviar el comprobante y garantizar tu cupo en el horno.\n\n` +
+          `💳 *Cuentas Bancarias:*\n${state.business.paymentInstructions}\n\n` +
+          `¡Quedamos atentos a tu comprobante por aquí!`;
+
+        const waUrl = `https://wa.me/${targetPhone}?text=${encodeURIComponent(waMsg)}`;
+        window.open(waUrl, "_blank");
+        showToast("Pedido Aceptado — Abriendo WhatsApp");
+      };
+
+      // ACCIÓN: Rechazar Pedido Web
+      const submitRejection = () => {
+        if (!rejectModalOrder) return;
+        const reason = rejectionReasonText.trim() || "Cupo lleno para la fecha solicitada";
+
+        const updatedDrafts = (state.drafts || []).map(d => {
+          if (d.id === rejectModalOrder.id) {
+            return { ...d, approvalStatus: "Rechazada", rejectionReason: reason };
+          }
+          return d;
+        });
+
+        saveToCloud({ ...state, drafts: updatedDrafts });
+
+        const cleanPhone = (rejectModalOrder.customerPhone || "").replace(/\D/g, "");
+        const targetPhone = cleanPhone.length === 10 ? "1" + cleanPhone : cleanPhone;
+
+        const waMsg = `🧁 *Hola, ${rejectModalOrder.customerName}.* Te escribimos de *LeRoss Bakery*.\n\n` +
+          `Con respecto a tu solicitud de pedido #${rejectModalOrder.orderNumber || ''} para el *${rejectModalOrder.deliveryDate || ''}*, lamentablemente *no tenemos disponibilidad* debido a:\n` +
+          `👉 *${reason}*.\n\n` +
+          `Sentimos no poder servirte en esta ocasión y quedamos a tu completa orden para una próxima fecha especial. ¡Gracias por tenernos presentes!`;
+
+        const waUrl = `https://wa.me/${targetPhone}?text=${encodeURIComponent(waMsg)}`;
+        setRejectModalOrder(null);
+        setRejectionReasonText("");
+        window.open(waUrl, "_blank");
+        showToast("Pedido Rechazado — Notificado por WhatsApp");
+      };
+
+      // Eliminar Borrador descartado
+      const deleteDraft = (draftId) => {
+        if (!confirm("¿Eliminar este registro de pedido?")) return;
+        const updatedDrafts = (state.drafts || []).filter(d => d.id !== draftId);
+        saveToCloud({ ...state, drafts: updatedDrafts });
+        showToast("Pedido eliminado");
       };
 
       const emitInvoice = () => {
@@ -383,12 +475,12 @@
 
         const itemsText = inv.calculation.lines.map(l => `• ${l.quantity}x ${l.name} — ${formatRD(l.lineTotal)}`).join("\n");
         const message = `🧁 *${state.business.name}*\n` +
-          `Factura: *${inv.number}*\n` +
+          `Factura Oficial: *${inv.number}*\n` +
           `Fecha: ${formatDate(inv.date)}\n` +
           `Cliente: *${inv.customerName}*\n\n` +
           `📋 *Detalle del Pedido:*\n${itemsText}\n\n` +
           `*Total: ${formatRD(inv.calculation.total)}*\n` +
-          `*Estado:* ${inv.paymentStatus === 'Pagada' ? '✅ Pagada' : '⏳ Pendiente'}\n` +
+          `*Estado de Pago:* ${inv.paymentStatus === 'Pagada' ? '✅ Pagada' : '⏳ Pendiente'}\n` +
           (inv.paymentStatus === 'Pendiente' ? `\n💳 *Datos de Pago:*\n${state.business.paymentInstructions}\n` : '') +
           `\n${state.business.footerMsg}`;
 
@@ -403,7 +495,7 @@
         if (!element) return;
 
         setIsGeneratingPdf(true);
-        showToast("Preparando PDF...");
+        showToast("Generando PDF...");
 
         const opt = {
           margin: [8, 8, 8, 8],
@@ -425,7 +517,7 @@
                 title: `${inv.number} - LeRoss Bakery`,
                 text: `Factura ${inv.number}`
               });
-              showToast("PDF listo");
+              showToast("PDF compartido");
             } else {
               await window.html2pdf().set(opt).from(element).save();
               showToast("PDF descargado");
@@ -473,7 +565,7 @@
             </div>
           )}
 
-          {/* Encabezado App */}
+          {/* Encabezado */}
           <header className="no-print bg-white/95 backdrop-blur-md border-b border-brand-border px-4 py-3 flex items-center justify-between sticky top-0 z-20">
             <div className="flex items-center space-x-2.5">
               {state.business.customLogo ? (
@@ -486,7 +578,7 @@
                 <div className="flex items-center space-x-1.5">
                   <span className={`w-2 h-2 rounded-full ${cloudStatus === 'synced' ? 'bg-emerald-500' : cloudStatus === 'connecting' ? 'bg-amber-400 animate-pulse' : 'bg-rose-500'}`}></span>
                   <span className="text-[10px] text-gray-500 font-semibold">
-                    {cloudStatus === 'synced' ? 'Nube Activa' : cloudStatus === 'connecting' ? 'Conectando...' : 'Error de Conexión'}
+                    {cloudStatus === 'synced' ? 'Nube Activa' : cloudStatus === 'connecting' ? 'Conectando...' : 'Sin Conexión'}
                   </span>
                 </div>
               </div>
@@ -496,7 +588,7 @@
                 ← Volver
               </button>
             ) : (
-              <button onClick={() => copyToClipboard(state.business.paymentInstructions).then(() => showToast("Datos bancarios copiados"))} className="text-[11px] bg-brand-softPink text-brand-darkPink px-2.5 py-1.5 rounded-full font-bold border border-brand-pink/30">
+              <button onClick={() => copyToClipboard(state.business.paymentInstructions).then(() => showToast("Cuentas de banco copiadas"))} className="text-[11px] bg-brand-softPink text-brand-darkPink px-2.5 py-1.5 rounded-full font-bold border border-brand-pink/30">
                 💳 Copiar Banco
               </button>
             )}
@@ -505,7 +597,7 @@
           {/* CONTENIDO PRINCIPAL */}
           <main className="flex-1 p-4 overflow-y-auto">
             
-            {/* VISTA 1: HISTORIAL DE FACTURAS */}
+            {/* VISTA 1: HISTORIAL DE FACTURAS Y PEDIDOS ENTRANTE */}
             {tab === "invoices" && (
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-3">
@@ -519,98 +611,185 @@
                   </div>
                 </div>
 
-                <div className="flex space-x-2">
-                  <input
-                    type="text"
-                    placeholder="Buscar cliente o número..."
-                    value={searchQuery}
-                    onChange={e => setSearchQuery(e.target.value)}
-                    className="flex-1 text-xs bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 outline-none focus:border-brand-pink"
-                  />
-                  <select
-                    value={statusFilter}
-                    onChange={e => setStatusFilter(e.target.value)}
-                    className="text-xs bg-brand-softBg border border-brand-border rounded-xl px-2.5 outline-none font-semibold text-brand-charcoal"
-                  >
-                    <option value="all">Todas</option>
-                    <option value="Pendiente">Pendientes</option>
-                    <option value="Pagada">Pagadas</option>
-                    <option value="Anulada">Anuladas</option>
-                  </select>
-                </div>
-
-                {/* Borradores */}
+                {/* SECCIÓN PEDIDOS WEB ENTRANTE (CON BOTONES DE ACEPTAR / RECHAZAR) */}
                 {(state.drafts && state.drafts.length > 0) && (
-                  <div className="space-y-2">
-                    <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Borradores en Espera</span>
-                    {state.drafts.map(d => (
-                      <div
-                        key={d.id}
-                        onClick={() => {
-                          setCurrentDraftId(d.id);
-                          setDraft(d);
-                          setTab("new");
-                        }}
-                        className="p-3 bg-amber-50/70 border border-amber-200 rounded-xl flex justify-between items-center cursor-pointer"
-                      >
-                        <div>
-                          <p className="text-xs font-bold text-amber-900">{d.customerName || "Sin cliente"}</p>
-                          <p className="text-[10px] text-amber-700">{formatDate(d.date)} • {formatRD(d.calculation.total)}</p>
+                  <div className="space-y-2.5">
+                    <div className="flex justify-between items-center">
+                      <span className="text-[11px] font-bold text-brand-charcoal uppercase tracking-wider flex items-center space-x-1.5">
+                        <span className="w-2 h-2 rounded-full bg-brand-pink animate-ping"></span>
+                        <span>Pedidos Web Entrantes ({state.drafts.length})</span>
+                      </span>
+                    </div>
+
+                    {state.drafts.map(order => {
+                      const isPending = !order.approvalStatus || order.approvalStatus === "Pendiente";
+                      const isAccepted = order.approvalStatus === "Aceptada";
+                      const isRejected = order.approvalStatus === "Rechazada";
+
+                      return (
+                        <div
+                          key={order.id}
+                          className={`p-3.5 rounded-2xl border transition-all ${
+                            isAccepted ? 'bg-emerald-50/50 border-emerald-200' :
+                            isRejected ? 'bg-rose-50/50 border-rose-200 opacity-60' :
+                            'bg-amber-50/70 border-amber-200 shadow-sm'
+                          }`}
+                        >
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <div className="flex items-center space-x-2">
+                                <span className="font-bold text-sm text-brand-charcoal">{order.customerName}</span>
+                                {order.orderNumber && (
+                                  <span className="text-[10px] bg-white px-1.5 py-0.5 rounded-md font-semibold text-gray-500 border border-gray-200">
+                                    {order.orderNumber}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs text-brand-darkPink font-medium mt-0.5">
+                                Entrega: <b>{order.deliveryDate || formatDate(order.date)}</b>
+                              </p>
+                              {order.notes && <p className="text-[11px] text-gray-500 italic mt-0.5">{order.notes}</p>}
+                            </div>
+                            <span className="text-sm font-bold text-brand-charcoal">{formatRD(order.calculation.total)}</span>
+                          </div>
+
+                          {/* Renglones del Pedido */}
+                          <div className="my-2 py-1.5 border-y border-brand-border/40 text-[11px] text-gray-600 space-y-0.5">
+                            {(order.items || []).map((it, idx) => (
+                              <div key={idx} className="flex justify-between">
+                                <span>{it.quantity}x {it.name}</span>
+                                <span className="font-medium">{formatRD(it.lineTotal)}</span>
+                              </div>
+                            ))}
+                          </div>
+
+                          {/* Botones de Decisión (Aceptar / Rechazar) */}
+                          <div className="pt-1 flex space-x-2">
+                            {isPending && (
+                              <>
+                                <button
+                                  onClick={() => acceptWebOrder(order)}
+                                  className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 rounded-xl text-xs flex items-center justify-center space-x-1 shadow-sm active:scale-95 transition-all"
+                                >
+                                  <span>✓ Aceptar (50%)</span>
+                                </button>
+                                <button
+                                  onClick={() => setRejectModalOrder(order)}
+                                  className="px-3 py-2 bg-white text-rose-600 hover:bg-rose-50 border border-rose-200 font-bold rounded-xl text-xs active:scale-95 transition-all"
+                                >
+                                  ✕ Rechazar
+                                </button>
+                              </>
+                            )}
+
+                            {isAccepted && (
+                              <div className="flex-1 flex space-x-2 items-center">
+                                <span className="text-xs font-bold text-emerald-700 bg-emerald-100/70 px-2.5 py-1.5 rounded-xl flex-1 text-center">
+                                  ✓ Confirmada (Esperando Pago)
+                                </span>
+                                <button
+                                  onClick={() => {
+                                    setCurrentDraftId(order.id);
+                                    setDraft(order);
+                                    setTab("new");
+                                  }}
+                                  className="bg-brand-pink text-white text-xs font-bold px-3 py-1.5 rounded-xl shadow-sm"
+                                >
+                                  Facturar
+                                </button>
+                              </div>
+                            )}
+
+                            {isRejected && (
+                              <div className="flex-1 flex justify-between items-center text-xs text-rose-600 font-semibold px-1">
+                                <span>Rechazada ({order.rejectionReason})</span>
+                                <button
+                                  onClick={() => deleteDraft(order.id)}
+                                  className="text-gray-400 hover:text-rose-600 text-xs underline"
+                                >
+                                  Descartar
+                                </button>
+                              </div>
+                            )}
+                          </div>
                         </div>
-                        <span className="text-[10px] font-bold bg-amber-200 text-amber-900 px-2 py-0.5 rounded-full">Editar</span>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
 
-                {/* Lista de Facturas */}
-                <div className="space-y-2.5">
-                  {state.invoices
-                    .filter(inv => {
-                      const matchesSearch = inv.customerName.toLowerCase().includes(searchQuery.toLowerCase()) || inv.number.toLowerCase().includes(searchQuery.toLowerCase());
-                      const matchesStatus = statusFilter === "all" ? true : (statusFilter === "Anulada" ? inv.state === "Anulada" : inv.paymentStatus === statusFilter && inv.state !== "Anulada");
-                      return matchesSearch && matchesStatus;
-                    })
-                    .map(inv => (
-                      <div
-                        key={inv.id}
-                        onClick={() => { setSelectedInvoice(inv); setTab("view"); }}
-                        className={`p-4 rounded-2xl border transition-all cursor-pointer bg-white ${inv.state === 'Anulada' ? 'border-gray-200 opacity-60' : 'border-brand-border hover:border-brand-pink/50 shadow-sm'}`}
-                      >
-                        <div className="flex justify-between items-start mb-1">
-                          <span className="font-bold text-sm text-brand-charcoal">{inv.number}</span>
-                          <span className={`text-[10px] px-2.5 py-0.5 rounded-full font-bold uppercase ${
-                            inv.state === 'Anulada' ? 'bg-gray-100 text-gray-500' :
-                            inv.paymentStatus === 'Pagada' ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'
-                          }`}>
-                            {inv.state === 'Anulada' ? 'Anulada' : inv.paymentStatus}
-                          </span>
-                        </div>
-                        <div className="flex justify-between items-baseline mt-2">
-                          <div>
-                            <p className="text-sm font-semibold text-brand-charcoal">{inv.customerName}</p>
-                            <p className="text-[11px] text-gray-400">{formatDate(inv.date)}</p>
-                          </div>
-                          <span className="text-base font-bold text-brand-darkPink">{formatRD(inv.calculation.total)}</span>
-                        </div>
-                      </div>
-                    ))}
+                {/* Búsqueda y Filtros de Facturas Oficiales */}
+                <div className="pt-2">
+                  <div className="flex space-x-2 mb-2.5">
+                    <input
+                      type="text"
+                      placeholder="Buscar cliente o número..."
+                      value={searchQuery}
+                      onChange={e => setSearchQuery(e.target.value)}
+                      className="flex-1 text-xs bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 outline-none focus:border-brand-pink"
+                    />
+                    <select
+                      value={statusFilter}
+                      onChange={e => setStatusFilter(e.target.value)}
+                      className="text-xs bg-brand-softBg border border-brand-border rounded-xl px-2.5 outline-none font-semibold text-brand-charcoal"
+                    >
+                      <option value="all">Todas</option>
+                      <option value="Pendiente">Pendientes</option>
+                      <option value="Pagada">Pagadas</option>
+                      <option value="Anulada">Anuladas</option>
+                    </select>
+                  </div>
 
-                  {state.invoices.length === 0 && (!state.drafts || state.drafts.length === 0) && (
-                    <div className="text-center py-12 text-gray-400 text-xs">
-                      No hay facturas emitidas todavía.<br/>Pulsa <b>+ Nueva</b> para crear una orden.
-                    </div>
-                  )}
+                  {/* Lista de Facturas Emitidas */}
+                  <div className="space-y-2.5">
+                    {state.invoices
+                      .filter(inv => {
+                        const matchesSearch = inv.customerName.toLowerCase().includes(searchQuery.toLowerCase()) || inv.number.toLowerCase().includes(searchQuery.toLowerCase());
+                        const matchesStatus = statusFilter === "all" ? true : (statusFilter === "Anulada" ? inv.state === "Anulada" : inv.paymentStatus === statusFilter && inv.state !== "Anulada");
+                        return matchesSearch && matchesStatus;
+                      })
+                      .map(inv => (
+                        <div
+                          key={inv.id}
+                          onClick={() => { setSelectedInvoice(inv); setTab("view"); }}
+                          className={`p-4 rounded-2xl border transition-all cursor-pointer bg-white ${inv.state === 'Anulada' ? 'border-gray-200 opacity-60' : 'border-brand-border hover:border-brand-pink/50 shadow-sm'}`}
+                        >
+                          <div className="flex justify-between items-start mb-1">
+                            <span className="font-bold text-sm text-brand-charcoal">{inv.number}</span>
+                            <span className={`text-[10px] px-2.5 py-0.5 rounded-full font-bold uppercase ${
+                              inv.state === 'Anulada' ? 'bg-gray-100 text-gray-500' :
+                              inv.paymentStatus === 'Pagada' ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'
+                            }`}>
+                              {inv.state === 'Anulada' ? 'Anulada' : inv.paymentStatus}
+                            </span>
+                          </div>
+                          <div className="flex justify-between items-baseline mt-2">
+                            <div>
+                              <p className="text-sm font-semibold text-brand-charcoal">{inv.customerName}</p>
+                              <p className="text-[11px] text-gray-400">{formatDate(inv.date)}</p>
+                            </div>
+                            <span className="text-base font-bold text-brand-darkPink">{formatRD(inv.calculation.total)}</span>
+                          </div>
+                        </div>
+                      ))}
+
+                    {state.invoices.length === 0 && (!state.drafts || state.drafts.length === 0) && (
+                      <div className="text-center py-12 text-gray-400 text-xs">
+                        No hay facturas ni pedidos pendientes.<br/>Pulsa <b>+ Nueva</b> para crear una factura manual.
+                      </div>
+                    )}
+                  </div>
                 </div>
+
               </div>
             )}
 
-            {/* VISTA 2: NUEVA FACTURA */}
+            {/* VISTA 2: NUEVA FACTURA O EDITAR PEDIDO */}
             {tab === "new" && (
               <div className="space-y-4">
                 <div className="flex justify-between items-center">
                   <h2 className="text-base font-bold text-brand-charcoal">
-                    {currentDraftId ? "Modificar Borrador" : "Nueva Factura"}
+                    {currentDraftId ? "Emitir Factura de Pedido" : "Nueva Factura Manual"}
                   </h2>
                   <button onClick={resetDraft} className="text-xs text-gray-400 hover:text-brand-darkPink">Limpiar</button>
                 </div>
@@ -792,26 +971,17 @@
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={saveDraftRecord}
-                    className="bg-brand-softPink hover:bg-rose-100 text-brand-darkPink font-bold py-3.5 rounded-2xl border border-brand-pink/30 text-xs transition-all"
-                  >
-                    Guardar Borrador
-                  </button>
-                  <button
-                    type="button"
-                    onClick={emitInvoice}
-                    className="bg-brand-pink hover:bg-brand-darkPink text-white font-bold py-3.5 rounded-2xl shadow-md text-xs transition-all active:scale-[0.99]"
-                  >
-                    Emitir Factura Oficial
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  onClick={emitInvoice}
+                  className="w-full bg-brand-pink hover:bg-brand-darkPink text-white font-bold py-3.5 rounded-2xl shadow-md text-xs transition-all active:scale-[0.99]"
+                >
+                  Emitir Factura Oficial ({state.prefix}{String(state.counter).padStart(4, "0")})
+                </button>
               </div>
             )}
 
-            {/* VISTA 3: FACTURA EMITIDA */}
+            {/* VISTA 3: FACTURA OFICIAL EMITIDA */}
             {tab === "view" && selectedInvoice && (
               <div className="space-y-4">
                 <div className="no-print flex space-x-2">
@@ -830,7 +1000,6 @@
                   </button>
                 </div>
 
-                {/* Documento de Factura con Logo Proporcional */}
                 <div id="print-area" className="bg-white p-6 rounded-2xl border border-brand-border shadow-sm space-y-5 text-brand-charcoal">
                   <div className="flex justify-between items-start border-b border-brand-border pb-4">
                     <div className="flex items-center space-x-3.5">
@@ -1021,7 +1190,6 @@
                           Restablecer logo original
                         </button>
                       )}
-                      <span className="text-[10px] text-gray-400 block text-center">Se adapta automáticamente sin recortar bordes ni textos.</span>
                     </div>
                   </div>
                 </div>
@@ -1072,13 +1240,66 @@
                       className="w-1/2 bg-white border border-brand-border rounded-xl px-3 py-2 outline-none disabled:bg-gray-100 font-semibold"
                     />
                   </div>
-                  {state.hasIssuedFirst && (
-                    <span className="text-[10px] text-gray-400 block">Numeración activa en la nube para garantizar orden consecutivo entre dispositivos.</span>
-                  )}
                 </div>
               </div>
             )}
           </main>
+
+          {/* Modal de Rechazo de Pedido */}
+          {rejectModalOrder && (
+            <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+              <div className="bg-white rounded-3xl p-5 w-full max-w-sm space-y-3.5 shadow-2xl">
+                <div className="flex justify-between items-center">
+                  <h3 className="font-bold text-sm text-brand-charcoal">Rechazar Pedido</h3>
+                  <button onClick={() => setRejectModalOrder(null)} className="text-gray-400 font-bold text-xs p-1">✕</button>
+                </div>
+
+                <p className="text-xs text-gray-500">
+                  Selecciona o escribe el motivo para {rejectModalOrder.customerName}:
+                </p>
+
+                <div className="space-y-1.5">
+                  {[
+                    "Cupo lleno en el horno para esa fecha",
+                    "Tiempo de anticipación insuficiente",
+                    "Fuera de rango de horario de entrega",
+                    "Ingrediente especial no disponible"
+                  ].map((preset, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => setRejectionReasonText(preset)}
+                      className="w-full text-left text-[11px] p-2 rounded-xl bg-brand-softBg hover:bg-brand-softPink border border-brand-border text-brand-charcoal transition-colors block"
+                    >
+                      • {preset}
+                    </button>
+                  ))}
+                </div>
+
+                <input
+                  type="text"
+                  placeholder="Otro motivo..."
+                  value={rejectionReasonText}
+                  onChange={e => setRejectionReasonText(e.target.value)}
+                  className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs outline-none"
+                />
+
+                <div className="flex space-x-2 pt-1">
+                  <button
+                    onClick={() => setRejectModalOrder(null)}
+                    className="flex-1 bg-gray-100 text-gray-600 font-bold py-2.5 rounded-xl text-xs"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    onClick={submitRejection}
+                    className="flex-1 bg-rose-600 text-white font-bold py-2.5 rounded-xl text-xs shadow-md"
+                  >
+                    Enviar Rechazo
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Barra de Pestañas Inferior */}
           <nav className="no-print bg-white/95 backdrop-blur-md border-t border-brand-border flex justify-around py-3 absolute bottom-0 left-0 right-0 z-30">
