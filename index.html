@@ -187,7 +187,10 @@
       const [tab, setTab] = useState("invoices");
       const [selectedInvoice, setSelectedInvoice] = useState(null);
       const [searchQuery, setSearchQuery] = useState("");
-      const [statusFilter, setStatusFilter] = useState("all");
+      
+      // Filtro simplificado a 3 estados: Pendiente por defecto
+      const [statusFilter, setStatusFilter] = useState("Pendiente");
+      
       const [toastMsg, setToastMsg] = useState("");
       const [cloudStatus, setCloudStatus] = useState("connecting");
       const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
@@ -424,7 +427,6 @@
           number: invoiceNumber,
           state: "Emitida",
           calculation,
-          archived: false,
           createdAt: new Date().toISOString()
         };
 
@@ -446,31 +448,16 @@
         if (!confirm("¿Está seguro de anular esta factura?")) return;
         saveToCloud({
           ...state,
-          invoices: state.invoices.map(inv => inv.id === invId ? { ...inv, state: "Anulada", archived: true } : inv)
+          invoices: state.invoices.map(inv => inv.id === invId ? { ...inv, state: "Anulada" } : inv)
         });
         if (selectedInvoice && selectedInvoice.id === invId) {
-          setSelectedInvoice(prev => ({ ...prev, state: "Anulada", archived: true }));
+          setSelectedInvoice(prev => ({ ...prev, state: "Anulada" }));
         }
-        showToast("Factura anulada y archivada");
+        showToast("Factura anulada");
       };
 
-      // Archivar / Desarchivar Factura
-      const toggleArchiveInvoice = (invId) => {
-        const target = state.invoices.find(i => i.id === invId);
-        const newArchivedState = !target.archived;
-        saveToCloud({
-          ...state,
-          invoices: state.invoices.map(inv => inv.id === invId ? { ...inv, archived: newArchivedState } : inv)
-        });
-        if (selectedInvoice && selectedInvoice.id === invId) {
-          setSelectedInvoice(prev => ({ ...prev, archived: newArchivedState }));
-        }
-        showToast(newArchivedState ? "Factura archivada" : "Factura desarchivada");
-      };
-
-      // Eliminar DEFINITIVAMENTE una Factura de la base de datos
       const permanentlyDeleteInvoice = (invId) => {
-        if (!confirm("⚠️ ¿Eliminar permanentemente esta factura de la nube? Esta acción no se puede deshacer.")) return;
+        if (!confirm("⚠️ ¿Eliminar permanentemente esta factura de la nube?")) return;
         const updatedInvoices = state.invoices.filter(i => i.id !== invId);
         saveToCloud({ ...state, invoices: updatedInvoices });
         setSelectedInvoice(null);
@@ -634,7 +621,7 @@
       };
 
       const metrics = useMemo(() => {
-        const active = state.invoices.filter(i => i.state !== "Anulada" && !i.archived);
+        const active = state.invoices.filter(i => i.state !== "Anulada");
         const totalMonth = active.reduce((acc, i) => acc + i.calculation.total, 0);
         const pending = active.filter(i => i.paymentStatus === "Pendiente").reduce((acc, i) => acc + i.calculation.total, 0);
         return { totalMonth, pending };
@@ -649,7 +636,7 @@
             </div>
           )}
 
-          {/* Encabezado Fijo Superior */}
+          {/* Encabezado Superior */}
           <header className="no-print flex-shrink-0 bg-white/95 backdrop-blur-md border-b border-brand-border px-4 py-3 flex items-center justify-between z-20">
             <div className="flex items-center space-x-2.5">
               {state.business.customLogo ? (
@@ -678,7 +665,7 @@
             )}
           </header>
 
-          {/* Área Central con Scroll Independiente */}
+          {/* Contenido Central */}
           <main className="flex-1 overflow-y-auto p-4 space-y-4 overscroll-contain">
             
             {/* VISTA 1: HISTORIAL DE FACTURAS */}
@@ -800,7 +787,7 @@
                   </div>
                 )}
 
-                {/* Filtro y Búsqueda */}
+                {/* Filtro y Búsqueda (3 OPCIONES EXACTAS) */}
                 <div className="pt-1">
                   <div className="flex space-x-2 mb-2.5">
                     <input
@@ -815,31 +802,21 @@
                       onChange={e => setStatusFilter(e.target.value)}
                       className="text-xs bg-brand-softBg border border-brand-border rounded-xl px-2.5 outline-none font-semibold text-brand-charcoal"
                     >
-                      <option value="all">Activas</option>
                       <option value="Pendiente">Pendientes</option>
                       <option value="Pagada">Pagadas</option>
                       <option value="Anulada">Anuladas</option>
-                      <option value="archived">Archivadas</option>
                     </select>
                   </div>
 
-                  {/* Lista de Facturas */}
+                  {/* Lista de Facturas Filtrada */}
                   <div className="space-y-2.5">
                     {state.invoices
                       .filter(inv => {
                         const matchesSearch = inv.customerName.toLowerCase().includes(searchQuery.toLowerCase()) || inv.number.toLowerCase().includes(searchQuery.toLowerCase());
                         
-                        let matchesStatus = true;
-                        if (statusFilter === "all") {
-                          // En "Activas", ocultar anuladas y archivadas para mantener la vista limpia
-                          matchesStatus = inv.state !== "Anulada" && !inv.archived;
-                        } else if (statusFilter === "Anulada") {
-                          matchesStatus = inv.state === "Anulada";
-                        } else if (statusFilter === "archived") {
-                          matchesStatus = inv.archived === true;
-                        } else {
-                          matchesStatus = inv.paymentStatus === statusFilter && inv.state !== "Anulada" && !inv.archived;
-                        }
+                        const matchesStatus = statusFilter === "Anulada"
+                          ? inv.state === "Anulada"
+                          : (inv.state !== "Anulada" && inv.paymentStatus === statusFilter);
                         
                         return matchesSearch && matchesStatus;
                       })
@@ -851,19 +828,12 @@
                         >
                           <div className="flex justify-between items-start mb-1">
                             <span className="font-bold text-sm text-brand-charcoal">{inv.number}</span>
-                            <div className="flex space-x-1.5 items-center">
-                              {inv.archived && (
-                                <span className="text-[9px] px-2 py-0.5 rounded-full font-bold bg-gray-200 text-gray-600">
-                                  Archivada
-                                </span>
-                              )}
-                              <span className={`text-[10px] px-2.5 py-0.5 rounded-full font-bold uppercase ${
-                                inv.state === 'Anulada' ? 'bg-rose-100 text-rose-600' :
-                                inv.paymentStatus === 'Pagada' ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'
-                              }`}>
-                                {inv.state === 'Anulada' ? 'Anulada' : inv.paymentStatus}
-                              </span>
-                            </div>
+                            <span className={`text-[10px] px-2.5 py-0.5 rounded-full font-bold uppercase ${
+                              inv.state === 'Anulada' ? 'bg-rose-100 text-rose-600' :
+                              inv.paymentStatus === 'Pagada' ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'
+                            }`}>
+                              {inv.state === 'Anulada' ? 'Anulada' : inv.paymentStatus}
+                            </span>
                           </div>
                           <div className="flex justify-between items-baseline mt-2">
                             <div>
@@ -875,9 +845,9 @@
                         </div>
                       ))}
 
-                    {state.invoices.length === 0 && (!state.drafts || state.drafts.length === 0) && (
+                    {state.invoices.filter(inv => statusFilter === "Anulada" ? inv.state === "Anulada" : (inv.state !== "Anulada" && inv.paymentStatus === statusFilter)).length === 0 && (
                       <div className="text-center py-12 text-gray-400 text-xs">
-                        No hay facturas ni pedidos activos.<br/>Pulsa <b>+ Nueva</b> para crear una factura manual.
+                        No hay facturas en estado "{statusFilter}".
                       </div>
                     )}
                   </div>
@@ -885,7 +855,7 @@
               </div>
             )}
 
-            {/* VISTA 2: NUEVA FACTURA MANUAL O DESDE PEDIDO */}
+            {/* VISTA 2: NUEVA FACTURA */}
             {tab === "new" && (
               <div className="space-y-4 pb-2">
                 <div className="flex justify-between items-center">
@@ -1082,7 +1052,7 @@
               </div>
             )}
 
-            {/* VISTA 3: FACTURA OFICIAL EMITIDA */}
+            {/* VISTA 3: FACTURA OFICIAL */}
             {tab === "view" && selectedInvoice && (
               <div className="space-y-4 pb-2">
                 <div className="no-print flex space-x-2">
@@ -1193,7 +1163,6 @@
                   )}
                 </div>
 
-                {/* Acciones de Factura (Pagar, Anular, Archivar, Eliminar) */}
                 <div className="no-print space-y-2 pt-2">
                   <div className="flex space-x-2">
                     {selectedInvoice.state !== "Anulada" ? (
@@ -1214,20 +1183,12 @@
                         </button>
                       </>
                     ) : (
-                      <>
-                        <button
-                          onClick={() => toggleArchiveInvoice(selectedInvoice.id)}
-                          className="flex-1 py-2.5 bg-gray-100 text-gray-700 hover:bg-gray-200 rounded-xl text-xs font-bold border border-gray-200 active:scale-95"
-                        >
-                          {selectedInvoice.archived ? "📂 Desarchivar" : "📁 Archivar"}
-                        </button>
-                        <button
-                          onClick={() => permanentlyDeleteInvoice(selectedInvoice.id)}
-                          className="py-2.5 px-4 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-sm active:scale-95"
-                        >
-                          🗑️ Eliminar Definitivamente
-                        </button>
-                      </>
+                      <button
+                        onClick={() => permanentlyDeleteInvoice(selectedInvoice.id)}
+                        className="w-full py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-sm active:scale-95"
+                      >
+                        🗑️ Eliminar Definitivamente
+                      </button>
                     )}
                   </div>
                 </div>
@@ -1454,7 +1415,7 @@
             )}
           </main>
 
-          {/* Modal Rechazo de Pedido */}
+          {/* Modal Rechazo */}
           {rejectModalOrder && (
             <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
               <div className="bg-white rounded-3xl p-5 w-full max-w-sm space-y-3.5 shadow-2xl">
@@ -1510,7 +1471,7 @@
             </div>
           )}
 
-          {/* Barra de Navegación Inferior SIEMPRE FIJA Y VISIBLE */}
+          {/* Barra de Navegación Inferior Fija */}
           <nav className="no-print flex-shrink-0 bg-white/95 backdrop-blur-md border-t border-brand-border flex justify-around py-2.5 pb-[max(0.6rem,env(safe-area-inset-bottom))] z-30 shadow-lg">
             <button
               onClick={() => setTab("invoices")}
