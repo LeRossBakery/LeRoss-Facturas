@@ -111,27 +111,24 @@
       return Promise.resolve();
     };
 
-    // Sintetizador de sonido de notificación (campanilla sin depender de archivos de audio externos)
     const playNotificationSound = () => {
       try {
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         const osc = audioCtx.createOscillator();
         const gain = audioCtx.createGain();
         osc.type = "sine";
-        osc.frequency.setValueAtTime(880, audioCtx.currentTime); // Nota La5
-        osc.frequency.exponentialRampToValueAtTime(1320, audioCtx.currentTime + 0.15); // Nota Mi6
+        osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(1320, audioCtx.currentTime + 0.15);
         gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
         gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.6);
         osc.connect(gain);
         gain.connect(audioCtx.destination);
         osc.start();
         osc.stop(audioCtx.currentTime + 0.6);
-      } catch (e) {
-        console.log("Audio contextual en espera de interacción.");
-      }
+      } catch (e) {}
     };
 
-    const compressImage = (file, maxWidth = 500, maxHeight = 500) => {
+    const compressImage = (file, maxWidth = 400, maxHeight = 400) => {
       return new Promise((resolve) => {
         const reader = new FileReader();
         reader.readAsDataURL(file);
@@ -159,8 +156,7 @@
             ctx.imageSmoothingEnabled = true;
             ctx.imageSmoothingQuality = 'high';
             ctx.drawImage(img, 0, 0, width, height);
-            const outputType = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
-            resolve(canvas.toDataURL(outputType, 0.88));
+            resolve(canvas.toDataURL('image/jpeg', 0.8));
           };
         };
       });
@@ -190,9 +186,13 @@
       const [cloudStatus, setCloudStatus] = useState("connecting");
       const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
 
-      // Estado para modal de rechazo de pedido
       const [rejectModalOrder, setRejectModalOrder] = useState(null);
       const [rejectionReasonText, setRejectionReasonText] = useState("");
+
+      // Estado para nuevo postre con foto
+      const [newProdName, setNewProdName] = useState("");
+      const [newProdPrice, setNewProdPrice] = useState("");
+      const [newProdImage, setNewProdImage] = useState("");
 
       const prevDraftsCountRef = useRef(0);
 
@@ -218,10 +218,10 @@
         },
         taxSettings: { applyITBIS: false, defaultRate: 18 },
         products: [
-          { id: "p1", name: "Flan Tradicional Casero", price: 1200, exempt: false },
-          { id: "p2", name: "Caja Mini Brownies (12 uds)", price: 650, exempt: false },
-          { id: "p3", name: "Tres Leches Clásico Familiar", price: 1500, exempt: false },
-          { id: "p4", name: "Pudín Dominicano Decorado", price: 2400, exempt: false }
+          { id: "p1", name: "Flan Tradicional Casero", price: 1200, exempt: false, image: "" },
+          { id: "p2", name: "Caja Mini Brownies (12 uds)", price: 650, exempt: false, image: "" },
+          { id: "p3", name: "Tres Leches Clásico Familiar", price: 1500, exempt: false, image: "" },
+          { id: "p4", name: "Pudín Dominicano Decorado", price: 2400, exempt: false, image: "" }
         ],
         invoices: [],
         drafts: []
@@ -232,7 +232,6 @@
         return local ? JSON.parse(local) : defaultState;
       });
 
-      // Sincronización en tiempo real y detector de nuevos pedidos web
       useEffect(() => {
         if (!db) {
           setCloudStatus("local");
@@ -244,7 +243,6 @@
             if (doc.exists) {
               const cloudData = doc.data();
               
-              // Si entra un nuevo pedido web, sonar alerta sonora
               const newDraftsCount = (cloudData.drafts || []).length;
               if (prevDraftsCountRef.current > 0 && newDraftsCount > prevDraftsCountRef.current) {
                 playNotificationSound();
@@ -340,10 +338,9 @@
         });
       };
 
-      // ACCIÓN: Aceptar Pedido Web
+      // Aceptar Pedido con 100% de pago y 3 horas de plazo
       const acceptWebOrder = (order) => {
-        const depositReq = order.depositRequired || Math.round((order.calculation.total || 0) * 0.5);
-        const remaining = (order.calculation.total || 0) - depositReq;
+        const totalVal = order.calculation.total || 0;
 
         const updatedDrafts = (state.drafts || []).map(d => {
           if (d.id === order.id) {
@@ -354,17 +351,14 @@
 
         saveToCloud({ ...state, drafts: updatedDrafts });
 
-        // Redactar mensaje de aceptación para WhatsApp
         const cleanPhone = (order.customerPhone || "").replace(/\D/g, "");
         const targetPhone = cleanPhone.length === 10 ? "1" + cleanPhone : cleanPhone;
 
         const waMsg = `🧁 *¡Hola, ${order.customerName}!* Te confirmamos con gusto de *LeRoss Bakery*.\n\n` +
           `✅ Tu pedido *#${order.orderNumber || 'Web'}* está *CONFIRMADO* para la fecha: *${order.deliveryDate || 'solicitada'}*.\n\n` +
-          `📋 *Detalle del Anticipo:*\n` +
-          `• Total de la orden: *${formatRD(order.calculation.total)}*\n` +
-          `• *Anticipo a transferir (50%): ${formatRD(depositReq)}*\n` +
-          `• Saldo contra entrega: ${formatRD(remaining)}\n\n` +
-          `⏳ *Plazo de Reserva:* Dispones de *6 horas* para enviar el comprobante y garantizar tu cupo en el horno.\n\n` +
+          `📋 *Pago Total del Pedido:*\n` +
+          `• Total a transferir (100%): *${formatRD(totalVal)}*\n\n` +
+          `⏳ *Plazo de Reserva:* Dispones de *3 horas* para enviar el comprobante del 100% para iniciar la preparación y garantizar tu cupo en el horno.\n\n` +
           `💳 *Cuentas Bancarias:*\n${state.business.paymentInstructions}\n\n` +
           `¡Quedamos atentos a tu comprobante por aquí!`;
 
@@ -373,7 +367,6 @@
         showToast("Pedido Aceptado — Abriendo WhatsApp");
       };
 
-      // ACCIÓN: Rechazar Pedido Web
       const submitRejection = () => {
         if (!rejectModalOrder) return;
         const reason = rejectionReasonText.trim() || "Cupo lleno para la fecha solicitada";
@@ -402,7 +395,6 @@
         showToast("Pedido Rechazado — Notificado por WhatsApp");
       };
 
-      // Eliminar Borrador descartado
       const deleteDraft = (draftId) => {
         if (!confirm("¿Eliminar este registro de pedido?")) return;
         const updatedDrafts = (state.drafts || []).filter(d => d.id !== draftId);
@@ -538,9 +530,17 @@
       const handleLogoUpload = async (e) => {
         const file = e.target.files[0];
         if (!file) return;
-        const compressed = await compressImage(file);
+        const compressed = await compressImage(file, 500, 500);
         saveToCloud({ ...state, business: { ...state.business, customLogo: compressed } });
         showToast("Logo optimizado y guardado");
+      };
+
+      const handleProductImageUpload = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const compressed = await compressImage(file, 300, 300);
+        setNewProdImage(compressed);
+        showToast("Foto de postre lista");
       };
 
       const removeLogo = () => {
@@ -565,7 +565,6 @@
             </div>
           )}
 
-          {/* Encabezado */}
           <header className="no-print bg-white/95 backdrop-blur-md border-b border-brand-border px-4 py-3 flex items-center justify-between sticky top-0 z-20">
             <div className="flex items-center space-x-2.5">
               {state.business.customLogo ? (
@@ -588,16 +587,14 @@
                 ← Volver
               </button>
             ) : (
-              <button onClick={() => copyToClipboard(state.business.paymentInstructions).then(() => showToast("Cuentas de banco copiadas"))} className="text-[11px] bg-brand-softPink text-brand-darkPink px-2.5 py-1.5 rounded-full font-bold border border-brand-pink/30">
+              <button onClick={() => copyToClipboard(state.business.paymentInstructions).then(() => showToast("Cuentas copiadas"))} className="text-[11px] bg-brand-softPink text-brand-darkPink px-2.5 py-1.5 rounded-full font-bold border border-brand-pink/30">
                 💳 Copiar Banco
               </button>
             )}
           </header>
 
-          {/* CONTENIDO PRINCIPAL */}
           <main className="flex-1 p-4 overflow-y-auto">
             
-            {/* VISTA 1: HISTORIAL DE FACTURAS Y PEDIDOS ENTRANTE */}
             {tab === "invoices" && (
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-3">
@@ -611,7 +608,6 @@
                   </div>
                 </div>
 
-                {/* SECCIÓN PEDIDOS WEB ENTRANTE (CON BOTONES DE ACEPTAR / RECHAZAR) */}
                 {(state.drafts && state.drafts.length > 0) && (
                   <div className="space-y-2.5">
                     <div className="flex justify-between items-center">
@@ -653,7 +649,6 @@
                             <span className="text-sm font-bold text-brand-charcoal">{formatRD(order.calculation.total)}</span>
                           </div>
 
-                          {/* Renglones del Pedido */}
                           <div className="my-2 py-1.5 border-y border-brand-border/40 text-[11px] text-gray-600 space-y-0.5">
                             {(order.items || []).map((it, idx) => (
                               <div key={idx} className="flex justify-between">
@@ -663,7 +658,6 @@
                             ))}
                           </div>
 
-                          {/* Botones de Decisión (Aceptar / Rechazar) */}
                           <div className="pt-1 flex space-x-2">
                             {isPending && (
                               <>
@@ -671,7 +665,7 @@
                                   onClick={() => acceptWebOrder(order)}
                                   className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 rounded-xl text-xs flex items-center justify-center space-x-1 shadow-sm active:scale-95 transition-all"
                                 >
-                                  <span>✓ Aceptar (50%)</span>
+                                  <span>✓ Aceptar (100% Pago)</span>
                                 </button>
                                 <button
                                   onClick={() => setRejectModalOrder(order)}
@@ -685,7 +679,7 @@
                             {isAccepted && (
                               <div className="flex-1 flex space-x-2 items-center">
                                 <span className="text-xs font-bold text-emerald-700 bg-emerald-100/70 px-2.5 py-1.5 rounded-xl flex-1 text-center">
-                                  ✓ Confirmada (Esperando Pago)
+                                  ✓ Confirmada (Plazo: 3h)
                                 </span>
                                 <button
                                   onClick={() => {
@@ -718,7 +712,6 @@
                   </div>
                 )}
 
-                {/* Búsqueda y Filtros de Facturas Oficiales */}
                 <div className="pt-2">
                   <div className="flex space-x-2 mb-2.5">
                     <input
@@ -740,7 +733,6 @@
                     </select>
                   </div>
 
-                  {/* Lista de Facturas Emitidas */}
                   <div className="space-y-2.5">
                     {state.invoices
                       .filter(inv => {
@@ -775,7 +767,7 @@
 
                     {state.invoices.length === 0 && (!state.drafts || state.drafts.length === 0) && (
                       <div className="text-center py-12 text-gray-400 text-xs">
-                        No hay facturas ni pedidos pendientes.<br/>Pulsa <b>+ Nueva</b> para crear una factura manual.
+                        No hay facturas ni pedidos pendientes.<br/>Pulsa <b>+ Nueva</b> para crear una orden manual.
                       </div>
                     )}
                   </div>
@@ -784,7 +776,6 @@
               </div>
             )}
 
-            {/* VISTA 2: NUEVA FACTURA O EDITAR PEDIDO */}
             {tab === "new" && (
               <div className="space-y-4">
                 <div className="flex justify-between items-center">
@@ -981,7 +972,6 @@
               </div>
             )}
 
-            {/* VISTA 3: FACTURA OFICIAL EMITIDA */}
             {tab === "view" && selectedInvoice && (
               <div className="space-y-4">
                 <div className="no-print flex space-x-2">
@@ -1115,16 +1105,25 @@
               </div>
             )}
 
-            {/* VISTA 4: MENÚ DE POSTRES */}
+            {/* VISTA 4: MENÚ DE POSTRES (CON FOTOS) */}
             {tab === "products" && (
               <div className="space-y-4">
                 <h2 className="text-base font-bold text-brand-charcoal">Menú de Postres</h2>
-                <div className="space-y-2">
+                <div className="space-y-2.5">
                   {state.products.map(p => (
-                    <div key={p.id} className="p-3.5 bg-brand-softBg rounded-2xl border border-brand-border flex justify-between items-center">
-                      <div>
-                        <span className="font-bold text-sm block text-brand-charcoal">{p.name}</span>
-                        <span className="text-xs font-bold text-brand-darkPink">{formatRD(p.price)}</span>
+                    <div key={p.id} className="p-3 bg-brand-softBg rounded-2xl border border-brand-border flex items-center justify-between">
+                      <div className="flex items-center space-x-3">
+                        {p.image ? (
+                          <img src={p.image} alt={p.name} className="w-12 h-12 rounded-xl object-cover border border-brand-border" />
+                        ) : (
+                          <div className="w-12 h-12 rounded-xl bg-white border border-brand-border flex items-center justify-center text-gray-300 text-xs font-bold">
+                            🧁
+                          </div>
+                        )}
+                        <div>
+                          <span className="font-bold text-sm block text-brand-charcoal">{p.name}</span>
+                          <span className="text-xs font-bold text-brand-darkPink">{formatRD(p.price)}</span>
+                        </div>
                       </div>
                       <button
                         onClick={() => saveToCloud({ ...state, products: state.products.filter(item => item.id !== p.id) })}
@@ -1136,22 +1135,54 @@
                   ))}
                 </div>
                 
-                <div className="p-3.5 bg-white border border-brand-border rounded-2xl space-y-2">
+                {/* Formulario de Alta con Subida de Foto */}
+                <div className="p-4 bg-white border border-brand-border rounded-2xl space-y-3">
                   <span className="text-xs font-bold text-brand-charcoal block">Añadir Postre al Menú</span>
-                  <input id="new-prod-name" placeholder="Ej. Tarta de Chocolate y Frambuesa" className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs outline-none" />
-                  <input id="new-prod-price" type="number" placeholder="Precio (RD$)" className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs outline-none" />
+                  <input 
+                    placeholder="Nombre (ej. Flan de Caramelo Familiar)" 
+                    value={newProdName}
+                    onChange={e => setNewProdName(e.target.value)}
+                    className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs outline-none" 
+                  />
+                  <input 
+                    type="number" 
+                    placeholder="Precio (RD$)" 
+                    value={newProdPrice}
+                    onChange={e => setNewProdPrice(e.target.value)}
+                    className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs outline-none" 
+                  />
+                  
+                  <div className="flex items-center space-x-3 pt-1">
+                    {newProdImage ? (
+                      <img src={newProdImage} alt="Preview" className="w-12 h-12 rounded-xl object-cover border border-brand-pink" />
+                    ) : (
+                      <div className="w-12 h-12 rounded-xl bg-brand-softBg border border-brand-border flex items-center justify-center text-gray-400 text-[10px] text-center font-medium">
+                        Sin Foto
+                      </div>
+                    )}
+                    <label className="flex-1 bg-brand-softBg border border-brand-border text-brand-charcoal font-semibold px-3 py-2 rounded-xl text-xs text-center cursor-pointer hover:bg-brand-softPink transition-colors">
+                      <span>📷 {newProdImage ? "Cambiar Foto" : "Subir Foto del Postre"}</span>
+                      <input type="file" accept="image/*" onChange={handleProductImageUpload} className="hidden" />
+                    </label>
+                  </div>
+
                   <button
                     onClick={() => {
-                      const name = document.getElementById("new-prod-name").value;
-                      const price = Number(document.getElementById("new-prod-price").value);
-                      if (name && price) {
+                      if (newProdName && newProdPrice) {
                         saveToCloud({
                           ...state,
-                          products: [...state.products, { id: "p_" + Date.now(), name, price, exempt: false }]
+                          products: [...state.products, {
+                            id: "p_" + Date.now(),
+                            name: newProdName,
+                            price: Number(newProdPrice),
+                            image: newProdImage,
+                            exempt: false
+                          }]
                         });
-                        document.getElementById("new-prod-name").value = "";
-                        document.getElementById("new-prod-price").value = "";
-                        showToast("Postre añadido y sincronizado");
+                        setNewProdName("");
+                        setNewProdPrice("");
+                        setNewProdImage("");
+                        showToast("Postre añadido y sincronizado a la Web");
                       }
                     }}
                     className="w-full bg-brand-pink text-white text-xs font-bold py-2.5 rounded-xl shadow-sm"
@@ -1162,7 +1193,6 @@
               </div>
             )}
 
-            {/* VISTA 5: AJUSTES Y NEGOCIO */}
             {tab === "settings" && (
               <div className="space-y-4 text-xs">
                 <h2 className="text-base font-bold text-brand-charcoal">Identidad de Marca & Ajustes</h2>
@@ -1245,7 +1275,6 @@
             )}
           </main>
 
-          {/* Modal de Rechazo de Pedido */}
           {rejectModalOrder && (
             <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
               <div className="bg-white rounded-3xl p-5 w-full max-w-sm space-y-3.5 shadow-2xl">
@@ -1301,7 +1330,6 @@
             </div>
           )}
 
-          {/* Barra de Pestañas Inferior */}
           <nav className="no-print bg-white/95 backdrop-blur-md border-t border-brand-border flex justify-around py-3 absolute bottom-0 left-0 right-0 z-30">
             <button
               onClick={() => setTab("invoices")}
