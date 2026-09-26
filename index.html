@@ -212,13 +212,13 @@
       const [rejectModalOrder, setRejectModalOrder] = useState(null);
       const [rejectionReasonText, setRejectionReasonText] = useState("");
 
-      // Estados de Postres
+      // Postres
       const [editingProductId, setEditingProductId] = useState(null);
       const [prodFormName, setProdFormName] = useState("");
       const [prodFormPrice, setProdFormPrice] = useState("");
       const [prodFormImage, setProdFormImage] = useState("");
 
-      // Estados de Clientes
+      // Clientes
       const [customerSearch, setCustomerSearch] = useState("");
       const [editingCustomerId, setEditingCustomerId] = useState(null);
       const [custFormName, setCustFormName] = useState("");
@@ -327,7 +327,6 @@
         notes: ""
       });
 
-      // Autocompletado reactivo de clientes al teclear en "Nueva Factura"
       const customerSuggestions = useMemo(() => {
         const query = (draft.customerName || "").trim().toLowerCase();
         if (!query || query.length < 2) return [];
@@ -337,7 +336,6 @@
         ).slice(0, 4);
       }, [draft.customerName, state.customers]);
 
-      // Función para encontrar coincidencia de cliente por teléfono (10 dígitos)
       const findCustomerByPhone = (rawPhone) => {
         const norm = normalizePhone(rawPhone);
         if (!norm || norm.length < 10) return null;
@@ -390,12 +388,10 @@
         });
       };
 
-      // Iniciar Facturación desde un Pedido Web (Con Auto-Vinculación por Teléfono)
       const startInvoicingWebOrder = (order) => {
         setCurrentDraftId(order.id);
         const matched = findCustomerByPhone(order.customerPhone);
 
-        // Si el teléfono coincide con un cliente existente, se usa el nombre oficial limpio del directorio
         setDraft({
           ...order,
           customerName: matched ? matched.name : order.customerName,
@@ -418,7 +414,6 @@
           return d;
         });
 
-        // Auto-guardado inteligente de clientes sin duplicados
         let updatedCustomers = [...(state.customers || [])];
         const orderPhoneNorm = normalizePhone(order.customerPhone);
         const existingIdx = updatedCustomers.findIndex(c => {
@@ -511,7 +506,6 @@
 
         const filteredDrafts = (state.drafts || []).filter(d => d.id !== currentDraftId);
 
-        // Control de duplicados en Clientes por teléfono o nombre
         let updatedCustomers = [...(state.customers || [])];
         const draftPhoneNorm = normalizePhone(draft.customerPhone);
         const draftNameNorm = draft.customerName.trim().toLowerCase();
@@ -583,6 +577,7 @@
         showToast("Marcada como Pagada");
       };
 
+      // MENSAJE DE WHATSAPP ACTUALIZADO: "Factura:" (Sin "Oficial")
       const shareWhatsApp = (inv) => {
         const cleanPhone = (inv.customerPhone || "").replace(/\D/g, "");
         let targetPhone = "";
@@ -591,7 +586,7 @@
 
         const itemsText = inv.calculation.lines.map(l => `• ${l.quantity}x ${l.name} — ${formatRD(l.lineTotal)}`).join("\n");
         const message = `🧁 *${state.business.name}*\n` +
-          `Factura Oficial: *${inv.number}*\n` +
+          `Factura: *${inv.number}*\n` +
           `Fecha: ${formatDate(inv.date)}\n` +
           `Cliente: *${inv.customerName}*\n\n` +
           `📋 *Detalle del Pedido:*\n${itemsText}\n\n` +
@@ -838,10 +833,10 @@
             )}
           </header>
 
-          {/* Contenido Central con Scroll */}
+          {/* Contenido Central */}
           <main className="flex-1 overflow-y-auto p-4 space-y-4 overscroll-contain">
             
-            {/* VISTA 1: HISTORIAL DE FACTURAS Y PEDIDOS WEB */}
+            {/* VISTA 1: FACTURAS & PEDIDOS ENTRANTES */}
             {tab === "invoices" && (
               <div className="space-y-4 pb-2">
                 <div className="grid grid-cols-2 gap-3">
@@ -855,7 +850,7 @@
                   </div>
                 </div>
 
-                {/* Pedidos Web Entrantes con Detección Automática de Cliente */}
+                {/* Pedidos Web Entrantes */}
                 {(state.drafts && state.drafts.length > 0) && (
                   <div className="space-y-2.5">
                     <div className="flex justify-between items-center">
@@ -870,7 +865,6 @@
                       const isAccepted = order.approvalStatus === "Aceptada";
                       const isRejected = order.approvalStatus === "Rechazada";
                       
-                      // Detección por teléfono
                       const matchedCust = findCustomerByPhone(order.customerPhone);
 
                       return (
@@ -893,7 +887,6 @@
                                 )}
                               </div>
 
-                              {/* Distintivo de Cliente Existente Detectado */}
                               {matchedCust && (
                                 <div className="mt-0.5 text-[11px] text-brand-darkPink font-medium flex items-center space-x-1">
                                   <span>👤 Cliente en directorio: <b>{matchedCust.name}</b></span>
@@ -970,7 +963,7 @@
                   </div>
                 )}
 
-                {/* Filtro y Búsqueda (3 Opciones: Pendientes, Pagadas, Anuladas) */}
+                {/* Filtro de Facturas (3 Opciones) */}
                 <div className="pt-1">
                   <div className="flex space-x-2 mb-2.5">
                     <input
@@ -1035,7 +1028,7 @@
               </div>
             )}
 
-            {/* VISTA 2: NUEVA FACTURA (CON AUTOCOMPLETADO Y VINCULACIÓN) */}
+            {/* VISTA 2: NUEVA FACTURA */}
             {tab === "new" && (
               <div className="space-y-4 pb-2">
                 <div className="flex justify-between items-center">
@@ -1061,7 +1054,6 @@
                       className="w-full bg-white border border-brand-border rounded-xl px-3 py-2 text-sm outline-none focus:border-brand-pink"
                     />
 
-                    {/* Sugerencias de Autocompletado */}
                     {customerSuggestions.length > 0 && (
                       <div className="mt-1 bg-white border border-brand-border rounded-xl shadow-md p-1.5 space-y-1 animate-in fade-in duration-150">
                         <span className="text-[10px] font-bold text-gray-400 px-2 block uppercase">Coincidencia en directorio:</span>
@@ -1258,7 +1250,7 @@
                   onClick={emitInvoice}
                   className="w-full bg-brand-pink hover:bg-brand-darkPink text-white font-bold py-3.5 rounded-2xl shadow-md text-xs transition-all active:scale-[0.99]"
                 >
-                  Emitir Factura Oficial ({state.prefix}{String(state.counter).padStart(4, "0")})
+                  Emitir Factura ({state.prefix}{String(state.counter).padStart(4, "0")})
                 </button>
               </div>
             )}
@@ -1278,7 +1270,7 @@
                   )}
                 </div>
 
-                {/* Formulario Conciso: Crear o Editar */}
+                {/* Formulario Conciso */}
                 <div className={`p-4 bg-white border rounded-2xl space-y-3 shadow-xs ${editingCustomerId ? 'border-brand-pink ring-1 ring-brand-pink/30' : 'border-brand-border'}`}>
                   <span className="text-xs font-bold text-brand-charcoal block">
                     {editingCustomerId ? "✏️ Modificar Cliente" : "➕ Añadir Nuevo Cliente"}
@@ -1336,7 +1328,7 @@
                   </div>
                 </div>
 
-                {/* Búsqueda de Clientes */}
+                {/* Búsqueda */}
                 <div>
                   <input
                     type="text"
@@ -1347,7 +1339,7 @@
                   />
                 </div>
 
-                {/* Lista de Clientes */}
+                {/* Lista */}
                 <div className="space-y-2.5">
                   {(state.customers || [])
                     .filter(c => 
@@ -1377,7 +1369,7 @@
                               href={`https://wa.me/${cust.phone.replace(/\D/g,'').length === 10 ? '1' + cust.phone.replace(/\D/g,'') : cust.phone.replace(/\D/g,'')}`}
                               target="_blank"
                               className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 border border-emerald-200 flex items-center justify-center text-xs shadow-xs"
-                              title="Chatear por WhatsApp"
+                              title="WhatsApp"
                             >
                               💬
                             </a>
@@ -1845,7 +1837,7 @@
             </div>
           )}
 
-          {/* Barra de Navegación Fija */}
+          {/* Barra de Navegación Fija con 5 Pestañas */}
           <nav className="no-print flex-shrink-0 bg-white/95 backdrop-blur-md border-t border-brand-border flex justify-around py-2.5 pb-[max(0.6rem,env(safe-area-inset-bottom))] z-30 shadow-lg">
             <button
               onClick={() => setTab("invoices")}
