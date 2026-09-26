@@ -128,7 +128,8 @@
       } catch (e) {}
     };
 
-    const compressImage = (file, maxWidth = 400, maxHeight = 400) => {
+    // Compresor Retina de alta fidelidad: 800x800 con calidad 0.84
+    const compressImage = (file, maxWidth = 800, maxHeight = 800) => {
       return new Promise((resolve) => {
         const reader = new FileReader();
         reader.readAsDataURL(file);
@@ -156,7 +157,7 @@
             ctx.imageSmoothingEnabled = true;
             ctx.imageSmoothingQuality = 'high';
             ctx.drawImage(img, 0, 0, width, height);
-            resolve(canvas.toDataURL('image/jpeg', 0.8));
+            resolve(canvas.toDataURL('image/jpeg', 0.84));
           };
         };
       });
@@ -189,10 +190,11 @@
       const [rejectModalOrder, setRejectModalOrder] = useState(null);
       const [rejectionReasonText, setRejectionReasonText] = useState("");
 
-      // Estado para nuevo postre con foto
-      const [newProdName, setNewProdName] = useState("");
-      const [newProdPrice, setNewProdPrice] = useState("");
-      const [newProdImage, setNewProdImage] = useState("");
+      // Estados para Administrar Postres (Crear y Editar)
+      const [editingProductId, setEditingProductId] = useState(null);
+      const [prodFormName, setProdFormName] = useState("");
+      const [prodFormPrice, setProdFormPrice] = useState("");
+      const [prodFormImage, setProdFormImage] = useState("");
 
       const prevDraftsCountRef = useRef(0);
 
@@ -338,7 +340,6 @@
         });
       };
 
-      // Aceptar Pedido con 100% de pago y 3 horas de plazo
       const acceptWebOrder = (order) => {
         const totalVal = order.calculation.total || 0;
 
@@ -530,23 +531,82 @@
       const handleLogoUpload = async (e) => {
         const file = e.target.files[0];
         if (!file) return;
-        const compressed = await compressImage(file, 500, 500);
+        const compressed = await compressImage(file, 800, 800);
         saveToCloud({ ...state, business: { ...state.business, customLogo: compressed } });
-        showToast("Logo optimizado y guardado");
+        showToast("Logo en alta resolución guardado");
       };
 
       const handleProductImageUpload = async (e) => {
         const file = e.target.files[0];
         if (!file) return;
-        const compressed = await compressImage(file, 300, 300);
-        setNewProdImage(compressed);
-        showToast("Foto de postre lista");
+        const compressed = await compressImage(file, 800, 800);
+        setProdFormImage(compressed);
+        showToast("Foto en alta resolución lista");
       };
 
       const removeLogo = () => {
         if (!confirm("¿Deseas restablecer el logo al diseño predeterminado?")) return;
         saveToCloud({ ...state, business: { ...state.business, customLogo: "" } });
         showToast("Logo restablecido");
+      };
+
+      // Iniciar edición de un postre existente
+      const startEditProduct = (prod) => {
+        setEditingProductId(prod.id);
+        setProdFormName(prod.name);
+        setProdFormPrice(String(prod.price));
+        setProdFormImage(prod.image || "");
+        showToast(`Editando: ${prod.name}`);
+      };
+
+      // Cancelar edición de postre
+      const cancelEditProduct = () => {
+        setEditingProductId(null);
+        setProdFormName("");
+        setProdFormPrice("");
+        setProdFormImage("");
+      };
+
+      // Guardar o Actualizar Postre
+      const handleSaveProduct = () => {
+        if (!prodFormName.trim()) {
+          alert("Indica el nombre del postre.");
+          return;
+        }
+        if (!prodFormPrice || Number(prodFormPrice) <= 0) {
+          alert("Indica un precio válido.");
+          return;
+        }
+
+        if (editingProductId) {
+          // Actualización de postre existente
+          const updated = state.products.map(p => {
+            if (p.id === editingProductId) {
+              return {
+                ...p,
+                name: prodFormName.trim(),
+                price: Number(prodFormPrice),
+                image: prodFormImage
+              };
+            }
+            return p;
+          });
+          saveToCloud({ ...state, products: updated });
+          cancelEditProduct();
+          showToast("Postre actualizado y sincronizado");
+        } else {
+          // Creación de nuevo postre
+          const newProduct = {
+            id: "p_" + Date.now(),
+            name: prodFormName.trim(),
+            price: Number(prodFormPrice),
+            image: prodFormImage,
+            exempt: false
+          };
+          saveToCloud({ ...state, products: [...state.products, newProduct] });
+          cancelEditProduct();
+          showToast("Postre añadido y sincronizado");
+        }
       };
 
       const metrics = useMemo(() => {
@@ -568,7 +628,7 @@
           <header className="no-print bg-white/95 backdrop-blur-md border-b border-brand-border px-4 py-3 flex items-center justify-between sticky top-0 z-20">
             <div className="flex items-center space-x-2.5">
               {state.business.customLogo ? (
-                <img src={state.business.customLogo} alt="Logo" className="max-h-10 max-w-[50px] w-auto h-auto object-contain rounded-lg border border-brand-border p-0.5" />
+                <img src={state.business.customLogo} alt="Logo" className="max-h-12 max-w-[60px] w-auto h-auto object-contain rounded-lg border border-brand-border p-0.5" />
               ) : (
                 <LeRossBadge size={38} />
               )}
@@ -1105,90 +1165,141 @@
               </div>
             )}
 
-            {/* VISTA 4: MENÚ DE POSTRES (CON FOTOS) */}
+            {/* VISTA 4: MENÚ DE POSTRES (CON EDICIÓN Y FOTOS RETINA) */}
             {tab === "products" && (
               <div className="space-y-4">
-                <h2 className="text-base font-bold text-brand-charcoal">Menú de Postres</h2>
+                <div className="flex justify-between items-center">
+                  <h2 className="text-base font-bold text-brand-charcoal">Menú de Postres</h2>
+                  <span className="text-[11px] text-gray-400">{state.products.length} postres activos</span>
+                </div>
+
+                {/* Lista de Postres con botones Editar y Eliminar */}
                 <div className="space-y-2.5">
                   {state.products.map(p => (
-                    <div key={p.id} className="p-3 bg-brand-softBg rounded-2xl border border-brand-border flex items-center justify-between">
-                      <div className="flex items-center space-x-3">
+                    <div 
+                      key={p.id} 
+                      className={`p-3 bg-brand-softBg rounded-2xl border transition-all flex items-center justify-between ${editingProductId === p.id ? 'border-brand-pink ring-2 ring-brand-pink/20 bg-brand-softPink/40' : 'border-brand-border'}`}
+                    >
+                      <div className="flex items-center space-x-3 flex-1 min-w-0 pr-2">
                         {p.image ? (
-                          <img src={p.image} alt={p.name} className="w-12 h-12 rounded-xl object-cover border border-brand-border" />
+                          <img src={p.image} alt={p.name} className="w-12 h-12 rounded-xl object-cover border border-brand-border flex-shrink-0" />
                         ) : (
-                          <div className="w-12 h-12 rounded-xl bg-white border border-brand-border flex items-center justify-center text-gray-300 text-xs font-bold">
+                          <div className="w-12 h-12 rounded-xl bg-white border border-brand-border flex items-center justify-center text-gray-300 text-xs font-bold flex-shrink-0">
                             🧁
                           </div>
                         )}
-                        <div>
-                          <span className="font-bold text-sm block text-brand-charcoal">{p.name}</span>
+                        <div className="min-w-0">
+                          <span className="font-bold text-sm block text-brand-charcoal truncate">{p.name}</span>
                           <span className="text-xs font-bold text-brand-darkPink">{formatRD(p.price)}</span>
                         </div>
                       </div>
-                      <button
-                        onClick={() => saveToCloud({ ...state, products: state.products.filter(item => item.id !== p.id) })}
-                        className="text-gray-400 hover:text-rose-500 text-xs px-2"
-                      >
-                        Eliminar
-                      </button>
+
+                      <div className="flex items-center space-x-1.5 flex-shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => startEditProduct(p)}
+                          className="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-white border border-brand-border text-brand-charcoal hover:text-brand-darkPink hover:border-brand-pink/50 shadow-xs"
+                        >
+                          Editar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (confirm(`¿Eliminar "${p.name}" del menú?`)) {
+                              saveToCloud({ ...state, products: state.products.filter(item => item.id !== p.id) });
+                              if (editingProductId === p.id) cancelEditProduct();
+                            }
+                          }}
+                          className="p-1.5 text-gray-400 hover:text-rose-500 rounded-lg"
+                          title="Eliminar"
+                        >
+                          ✕
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
                 
-                {/* Formulario de Alta con Subida de Foto */}
-                <div className="p-4 bg-white border border-brand-border rounded-2xl space-y-3">
-                  <span className="text-xs font-bold text-brand-charcoal block">Añadir Postre al Menú</span>
-                  <input 
-                    placeholder="Nombre (ej. Flan de Caramelo Familiar)" 
-                    value={newProdName}
-                    onChange={e => setNewProdName(e.target.value)}
-                    className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs outline-none" 
-                  />
-                  <input 
-                    type="number" 
-                    placeholder="Precio (RD$)" 
-                    value={newProdPrice}
-                    onChange={e => setNewProdPrice(e.target.value)}
-                    className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs outline-none" 
-                  />
+                {/* Formulario Dinámico: Añadir o Editar */}
+                <div className={`p-4 bg-white border rounded-2xl space-y-3 shadow-xs ${editingProductId ? 'border-brand-pink ring-1 ring-brand-pink/30' : 'border-brand-border'}`}>
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs font-bold text-brand-charcoal block">
+                      {editingProductId ? "✏️ Modificar Postre del Menú" : "➕ Añadir Nuevo Postre"}
+                    </span>
+                    {editingProductId && (
+                      <button
+                        type="button"
+                        onClick={cancelEditProduct}
+                        className="text-[11px] text-gray-400 hover:text-brand-charcoal underline"
+                      >
+                        Cancelar edición
+                      </button>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="text-[11px] font-semibold text-gray-500 block mb-1">Nombre del Postre</label>
+                    <input 
+                      placeholder="Ej. Tres Leches Clásico Familiar" 
+                      value={prodFormName}
+                      onChange={e => setProdFormName(e.target.value)}
+                      className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs outline-none focus:border-brand-pink" 
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[11px] font-semibold text-gray-500 block mb-1">Precio de Venta (RD$)</label>
+                    <input 
+                      type="number" 
+                      placeholder="1500" 
+                      value={prodFormPrice}
+                      onChange={e => setProdFormPrice(e.target.value)}
+                      className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs outline-none focus:border-brand-pink" 
+                    />
+                  </div>
                   
                   <div className="flex items-center space-x-3 pt-1">
-                    {newProdImage ? (
-                      <img src={newProdImage} alt="Preview" className="w-12 h-12 rounded-xl object-cover border border-brand-pink" />
+                    {prodFormImage ? (
+                      <div className="relative">
+                        <img src={prodFormImage} alt="Preview" className="w-14 h-14 rounded-xl object-cover border border-brand-pink shadow-xs" />
+                        <button
+                          type="button"
+                          onClick={() => setProdFormImage("")}
+                          className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-rose-500 text-white rounded-full text-[10px] font-bold flex items-center justify-center shadow-xs"
+                          title="Quitar foto"
+                        >
+                          ✕
+                        </button>
+                      </div>
                     ) : (
-                      <div className="w-12 h-12 rounded-xl bg-brand-softBg border border-brand-border flex items-center justify-center text-gray-400 text-[10px] text-center font-medium">
+                      <div className="w-14 h-14 rounded-xl bg-brand-softBg border border-brand-border flex items-center justify-center text-gray-400 text-[10px] text-center font-medium">
                         Sin Foto
                       </div>
                     )}
-                    <label className="flex-1 bg-brand-softBg border border-brand-border text-brand-charcoal font-semibold px-3 py-2 rounded-xl text-xs text-center cursor-pointer hover:bg-brand-softPink transition-colors">
-                      <span>📷 {newProdImage ? "Cambiar Foto" : "Subir Foto del Postre"}</span>
+                    <label className="flex-1 bg-brand-softBg border border-brand-border text-brand-charcoal font-semibold px-3 py-2.5 rounded-xl text-xs text-center cursor-pointer hover:bg-brand-softPink transition-colors">
+                      <span>📷 {prodFormImage ? "Reemplazar Foto (Retina)" : "Subir Foto del Postre (Retina)"}</span>
                       <input type="file" accept="image/*" onChange={handleProductImageUpload} className="hidden" />
                     </label>
                   </div>
 
-                  <button
-                    onClick={() => {
-                      if (newProdName && newProdPrice) {
-                        saveToCloud({
-                          ...state,
-                          products: [...state.products, {
-                            id: "p_" + Date.now(),
-                            name: newProdName,
-                            price: Number(newProdPrice),
-                            image: newProdImage,
-                            exempt: false
-                          }]
-                        });
-                        setNewProdName("");
-                        setNewProdPrice("");
-                        setNewProdImage("");
-                        showToast("Postre añadido y sincronizado a la Web");
-                      }
-                    }}
-                    className="w-full bg-brand-pink text-white text-xs font-bold py-2.5 rounded-xl shadow-sm"
-                  >
-                    Guardar en el Menú
-                  </button>
+                  <div className="pt-1 flex space-x-2">
+                    {editingProductId && (
+                      <button
+                        type="button"
+                        onClick={cancelEditProduct}
+                        className="w-1/3 bg-gray-100 hover:bg-gray-200 text-gray-600 text-xs font-bold py-2.5 rounded-xl"
+                      >
+                        Cancelar
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleSaveProduct}
+                      className="flex-1 bg-brand-pink hover:bg-brand-darkPink text-white text-xs font-bold py-2.5 rounded-xl shadow-sm transition-all active:scale-[0.99]"
+                    >
+                      {editingProductId ? "Actualizar Postre" : "Guardar en el Menú"}
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
