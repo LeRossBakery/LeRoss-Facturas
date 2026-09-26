@@ -101,6 +101,19 @@
       return `${d}/${m}/${y}`;
     };
 
+    // Formateador Estricto RD (XXX-XXX-XXXX)
+    const formatPhoneInput = (val) => {
+      if (!val) return "";
+      let digits = String(val).replace(/\D/g, "");
+      if (digits.startsWith("1") && digits.length > 10) {
+        digits = digits.slice(1);
+      }
+      digits = digits.slice(0, 10);
+      if (digits.length <= 3) return digits;
+      if (digits.length <= 6) return `${digits.slice(0, 3)}-${digits.slice(3)}`;
+      return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
+    };
+
     const normalizePhone = (phone) => {
       if (!phone) return "";
       const digits = String(phone).replace(/\D/g, "");
@@ -395,7 +408,7 @@
         setDraft({
           ...order,
           customerName: matched ? matched.name : order.customerName,
-          customerPhone: matched ? (matched.phone || order.customerPhone) : order.customerPhone
+          customerPhone: matched ? formatPhoneInput(matched.phone || order.customerPhone) : formatPhoneInput(order.customerPhone)
         });
 
         setTab("new");
@@ -426,7 +439,7 @@
           updatedCustomers.push({
             id: "cust_" + Date.now(),
             name: order.customerName.trim(),
-            phone: order.customerPhone.trim(),
+            phone: formatPhoneInput(order.customerPhone),
             birthday: ""
           });
         }
@@ -520,13 +533,13 @@
           updatedCustomers[matchIdx] = {
             ...updatedCustomers[matchIdx],
             name: draft.customerName.trim(),
-            phone: draft.customerPhone.trim() || updatedCustomers[matchIdx].phone
+            phone: formatPhoneInput(draft.customerPhone) || updatedCustomers[matchIdx].phone
           };
         } else if (draft.customerName.trim()) {
           updatedCustomers.push({
             id: "cust_" + Date.now(),
             name: draft.customerName.trim(),
-            phone: (draft.customerPhone || "").trim(),
+            phone: formatPhoneInput(draft.customerPhone),
             birthday: ""
           });
         }
@@ -577,7 +590,7 @@
         showToast("Marcada como Pagada");
       };
 
-      // MENSAJE DE WHATSAPP ACTUALIZADO: "Factura:" (Sin "Oficial")
+      // MENSAJE WHATSAPP: "Factura: FAC-XXXX" (Sin "Oficial")
       const shareWhatsApp = (inv) => {
         const cleanPhone = (inv.customerPhone || "").replace(/\D/g, "");
         let targetPhone = "";
@@ -725,7 +738,7 @@
       const startEditCustomer = (cust) => {
         setEditingCustomerId(cust.id);
         setCustFormName(cust.name);
-        setCustFormPhone(cust.phone || "");
+        setCustFormPhone(formatPhoneInput(cust.phone || ""));
         setCustFormBirthday(cust.birthday || "");
         showToast(`Editando: ${cust.name}`);
       };
@@ -748,6 +761,7 @@
         }
 
         const currentList = state.customers || [];
+        const formattedPhone = formatPhoneInput(custFormPhone);
 
         if (editingCustomerId) {
           const updated = currentList.map(c => {
@@ -755,7 +769,7 @@
               return {
                 ...c,
                 name: custFormName.trim(),
-                phone: custFormPhone.trim(),
+                phone: formattedPhone,
                 birthday: custFormBirthday || ""
               };
             }
@@ -768,7 +782,7 @@
           const newCustomer = {
             id: "cust_" + Date.now(),
             name: custFormName.trim(),
-            phone: custFormPhone.trim(),
+            phone: formattedPhone,
             birthday: custFormBirthday || ""
           };
           saveToCloud({ ...state, customers: [...currentList, newCustomer] });
@@ -782,7 +796,7 @@
         setDraft(prev => ({
           ...prev,
           customerName: cust.name,
-          customerPhone: cust.phone || ""
+          customerPhone: formatPhoneInput(cust.phone || "")
         }));
         setTab("new");
         showToast(`Factura para ${cust.name}`);
@@ -963,7 +977,7 @@
                   </div>
                 )}
 
-                {/* Filtro de Facturas (3 Opciones) */}
+                {/* Filtro de Facturas (3 Opciones: Pendientes, Pagadas, Anuladas) */}
                 <div className="pt-1">
                   <div className="flex space-x-2 mb-2.5">
                     <input
@@ -1064,7 +1078,7 @@
                               setDraft({
                                 ...draft,
                                 customerName: cust.name,
-                                customerPhone: cust.phone || draft.customerPhone
+                                customerPhone: formatPhoneInput(cust.phone || draft.customerPhone)
                               });
                               showToast(`Cliente seleccionado: ${cust.name}`);
                             }}
@@ -1080,13 +1094,14 @@
 
                   <div className="grid grid-cols-2 gap-2">
                     <div>
-                      <label className="text-xs font-semibold text-gray-500 block mb-1">WhatsApp</label>
+                      <label className="text-xs font-semibold text-gray-500 block mb-1">WhatsApp (Auto-formato)</label>
                       <input
                         type="tel"
-                        placeholder="849-000-0000"
+                        maxLength="12"
+                        placeholder="809-000-0000"
                         value={draft.customerPhone}
-                        onChange={e => setDraft({ ...draft, customerPhone: e.target.value })}
-                        className="w-full bg-white border border-brand-border rounded-xl px-3 py-2 text-sm outline-none"
+                        onChange={e => setDraft({ ...draft, customerPhone: formatPhoneInput(e.target.value) })}
+                        className="w-full bg-white border border-brand-border rounded-xl px-3 py-2 text-sm outline-none font-medium"
                       />
                     </div>
                     <div>
@@ -1291,10 +1306,11 @@
                       <label className="text-[11px] font-semibold text-gray-500 block mb-1">WhatsApp / Teléfono *</label>
                       <input 
                         type="tel"
-                        placeholder="829-000-0000" 
+                        maxLength="12"
+                        placeholder="809-000-0000" 
                         value={custFormPhone}
-                        onChange={e => setCustFormPhone(e.target.value)}
-                        className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs outline-none focus:border-brand-pink" 
+                        onChange={e => setCustFormPhone(formatPhoneInput(e.target.value))}
+                        className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs outline-none focus:border-brand-pink font-medium" 
                       />
                     </div>
                     <div>
@@ -1354,7 +1370,7 @@
                         <div className="flex-1 min-w-0 pr-2">
                           <h4 className="font-bold text-sm text-brand-charcoal truncate">{cust.name}</h4>
                           <div className="flex items-center space-x-2 mt-0.5">
-                            <span className="text-xs text-gray-500">{cust.phone || "Sin teléfono"}</span>
+                            <span className="text-xs text-gray-500 font-medium">{formatPhoneInput(cust.phone) || "Sin teléfono"}</span>
                             {cust.birthday && (
                               <span className="text-[10px] bg-brand-softPink text-brand-darkPink font-semibold px-2 py-0.5 rounded-full border border-brand-pink/30">
                                 🎂 {formatBirthday(cust.birthday)}
@@ -1594,10 +1610,11 @@
                     onChange={e => saveToCloud({ ...state, business: { ...state.business, name: e.target.value } })}
                     className="w-full bg-white border border-brand-border rounded-xl px-3 py-2 outline-none font-semibold"
                   />
-                  <label className="font-bold text-gray-500 block">Teléfono / WhatsApp</label>
+                  <label className="font-bold text-gray-500 block">Teléfono / WhatsApp (Auto-formato)</label>
                   <input
+                    maxLength="12"
                     value={state.business.phone}
-                    onChange={e => saveToCloud({ ...state, business: { ...state.business, phone: e.target.value } })}
+                    onChange={e => saveToCloud({ ...state, business: { ...state.business, phone: formatPhoneInput(e.target.value) } })}
                     className="w-full bg-white border border-brand-border rounded-xl px-3 py-2 outline-none font-semibold"
                   />
                   <label className="font-bold text-gray-500 block">Instagram</label>
@@ -1687,7 +1704,7 @@
                   <div className="bg-brand-softBg p-3 rounded-xl text-xs space-y-0.5">
                     <span className="text-gray-400 uppercase tracking-wider text-[10px] block font-bold">Cliente</span>
                     <p className="font-bold text-sm text-brand-charcoal">{selectedInvoice.customerName}</p>
-                    {selectedInvoice.customerPhone && <p className="text-gray-500">{selectedInvoice.customerPhone}</p>}
+                    {selectedInvoice.customerPhone && <p className="text-gray-500">{formatPhoneInput(selectedInvoice.customerPhone)}</p>}
                   </div>
 
                   <table className="w-full text-xs">
