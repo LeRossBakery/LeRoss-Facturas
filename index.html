@@ -41,11 +41,10 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 
-  <!-- html2pdf Engine (Fixes iOS PWA Printing & Generates True PDF) -->
+  <!-- html2pdf Engine -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 
   <script>
-    // Configuración oficial de LeRoss Bakery en Firebase
     const firebaseConfig = {
       apiKey: "AIzaSyD4cZCLRyRizzk671J35-WX1PxnrJ5_kHo",
       authDomain: "le-ross-8d008.firebaseapp.com",
@@ -112,7 +111,8 @@
       return Promise.resolve();
     };
 
-    const compressImage = (file, maxWidth = 250, maxHeight = 250) => {
+    // Compresor de fotos de alta fidelidad que preserva proporción y transparencia
+    const compressImage = (file, maxWidth = 500, maxHeight = 500) => {
       return new Promise((resolve) => {
         const reader = new FileReader();
         reader.readAsDataURL(file);
@@ -125,31 +125,34 @@
             let height = img.height;
             if (width > height) {
               if (width > maxWidth) {
-                height *= maxWidth / width;
+                height = Math.round(height * (maxWidth / width));
                 width = maxWidth;
               }
             } else {
               if (height > maxHeight) {
-                width *= maxHeight / height;
+                width = Math.round(width * (maxHeight / height));
                 height = maxHeight;
               }
             }
             canvas.width = width;
             canvas.height = height;
             const ctx = canvas.getContext('2d');
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
             ctx.drawImage(img, 0, 0, width, height);
-            resolve(canvas.toDataURL('image/jpeg', 0.8));
+            const outputType = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+            resolve(canvas.toDataURL(outputType, 0.88));
           };
         };
       });
     };
 
-    const LeRossBadge = ({ size = 38 }) => (
+    const LeRossBadge = ({ size = 42 }) => (
       <div 
         style={{ width: size, height: size }}
-        className="rounded-full bg-brand-pink flex flex-col items-center justify-center text-white shadow-sm flex-shrink-0 relative overflow-hidden"
+        className="rounded-2xl bg-brand-pink flex flex-col items-center justify-center text-white shadow-sm flex-shrink-0 relative overflow-hidden p-1"
       >
-        <svg viewBox="0 0 100 100" className="w-4/5 h-4/5 fill-current">
+        <svg viewBox="0 0 100 100" className="w-full h-full fill-current">
           <ellipse cx="50" cy="30" rx="20" ry="6" fill="none" stroke="white" strokeWidth="4" />
           <ellipse cx="50" cy="40" rx="24" ry="7" fill="none" stroke="white" strokeWidth="4" />
           <ellipse cx="50" cy="52" rx="28" ry="8" fill="none" stroke="white" strokeWidth="4" />
@@ -180,10 +183,10 @@
         business: {
           name: "LeRoss Bakery",
           customLogo: "",
-          phone: "829-000-0000",
+          phone: "849-441-1315",
           address: "Santo Domingo, D.N.",
           email: "contacto@lerossbakery.com",
-          instagram: "@lerossbakery",
+          instagram: "@rossynellys",
           rnc: "",
           footerMsg: "¡Gracias por endulzar tus momentos con nosotros! 🧁",
           paymentInstructions: "Banco Popular / Banreservas / BHD\nCuenta de Ahorros: 000-000000-0\nA nombre de: LeRoss Bakery\nPor favor enviar comprobante a este WhatsApp."
@@ -237,7 +240,7 @@
         if (db) {
           db.collection("leross_app").doc("main_data").set(newState).catch(err => {
             console.error("Cloud write failed:", err);
-            showToast("Guardado solo local (sin conexión)");
+            showToast("Guardado solo local");
           });
         }
       };
@@ -312,7 +315,7 @@
         
         const filtered = (state.drafts || []).filter(d => d.id !== draftId);
         saveToCloud({ ...state, drafts: [draftRecord, ...filtered] });
-        showToast("Borrador guardado en la nube");
+        showToast("Borrador guardado");
       };
 
       const emitInvoice = () => {
@@ -395,7 +398,6 @@
         window.open(url, "_blank");
       };
 
-      // Solución definitiva para Imprimir / Generar PDF en iOS, Android y PC
       const handlePrintOrPdf = async (inv) => {
         const element = document.getElementById("print-area");
         if (!element) return;
@@ -417,7 +419,6 @@
             const pdfBlob = await worker.outputPdf('blob');
             const pdfFile = new File([pdfBlob], `${inv.number}.pdf`, { type: 'application/pdf' });
 
-            // Si es un celular o tablet con menú nativo de compartir
             if (navigator.canShare && navigator.canShare({ files: [pdfFile] })) {
               await navigator.share({
                 files: [pdfFile],
@@ -426,9 +427,8 @@
               });
               showToast("PDF listo");
             } else {
-              // Descarga directa para computadoras
               await window.html2pdf().set(opt).from(element).save();
-              showToast("PDF descargado en el equipo");
+              showToast("PDF descargado");
             }
           } else {
             window.print();
@@ -448,7 +448,13 @@
         if (!file) return;
         const compressed = await compressImage(file);
         saveToCloud({ ...state, business: { ...state.business, customLogo: compressed } });
-        showToast("Logo guardado y sincronizado");
+        showToast("Logo optimizado y guardado");
+      };
+
+      const removeLogo = () => {
+        if (!confirm("¿Deseas restablecer el logo al diseño predeterminado?")) return;
+        saveToCloud({ ...state, business: { ...state.business, customLogo: "" } });
+        showToast("Logo restablecido");
       };
 
       const metrics = useMemo(() => {
@@ -467,13 +473,13 @@
             </div>
           )}
 
-          {/* Encabezado */}
+          {/* Encabezado App */}
           <header className="no-print bg-white/95 backdrop-blur-md border-b border-brand-border px-4 py-3 flex items-center justify-between sticky top-0 z-20">
             <div className="flex items-center space-x-2.5">
               {state.business.customLogo ? (
-                <img src={state.business.customLogo} alt="Logo" className="w-9 h-9 rounded-full object-cover border border-brand-border" />
+                <img src={state.business.customLogo} alt="Logo" className="max-h-10 max-w-[50px] w-auto h-auto object-contain rounded-lg border border-brand-border p-0.5" />
               ) : (
-                <LeRossBadge size={36} />
+                <LeRossBadge size={38} />
               )}
               <div>
                 <span className="font-bold text-sm tracking-tight block text-brand-charcoal">{state.business.name}</span>
@@ -625,7 +631,7 @@
                       <label className="text-xs font-semibold text-gray-500 block mb-1">WhatsApp</label>
                       <input
                         type="tel"
-                        placeholder="809-000-0000"
+                        placeholder="849-000-0000"
                         value={draft.customerPhone}
                         onChange={e => setDraft({ ...draft, customerPhone: e.target.value })}
                         className="w-full bg-white border border-brand-border rounded-xl px-3 py-2 text-sm outline-none"
@@ -824,16 +830,23 @@
                   </button>
                 </div>
 
+                {/* Documento de Factura con Logo Proporcional */}
                 <div id="print-area" className="bg-white p-6 rounded-2xl border border-brand-border shadow-sm space-y-5 text-brand-charcoal">
                   <div className="flex justify-between items-start border-b border-brand-border pb-4">
-                    <div className="flex items-center space-x-3">
+                    <div className="flex items-center space-x-3.5">
                       {state.business.customLogo ? (
-                        <img src={state.business.customLogo} alt="Logo" className="w-14 h-14 rounded-full object-cover border border-brand-border" />
+                        <div className="max-h-20 max-w-[130px] flex items-center justify-center">
+                          <img 
+                            src={state.business.customLogo} 
+                            alt="Logo" 
+                            className="max-h-20 max-w-[130px] w-auto h-auto object-contain rounded-xl" 
+                          />
+                        </div>
                       ) : (
                         <LeRossBadge size={54} />
                       )}
                       <div>
-                        <h1 className="font-serif text-xl font-bold text-brand-darkPink">{state.business.name}</h1>
+                        <h1 className="font-serif text-xl font-bold text-brand-darkPink leading-tight">{state.business.name}</h1>
                         <p className="text-xs text-gray-500">{state.business.address}</p>
                         <p className="text-xs text-gray-500">{state.business.phone}</p>
                         {state.business.instagram && <p className="text-xs text-brand-darkPink font-medium">{state.business.instagram}</p>}
@@ -989,16 +1002,26 @@
                   <span className="font-bold text-brand-charcoal block">Logo de la Pastelería</span>
                   <div className="flex items-center space-x-3">
                     {state.business.customLogo ? (
-                      <img src={state.business.customLogo} alt="Logo" className="w-16 h-16 rounded-full object-cover border-2 border-brand-pink shadow-sm" />
+                      <div className="w-16 h-16 bg-white rounded-xl border border-brand-pink/40 flex items-center justify-center p-1 shadow-sm">
+                        <img src={state.business.customLogo} alt="Logo" className="max-w-full max-h-full object-contain" />
+                      </div>
                     ) : (
                       <LeRossBadge size={64} />
                     )}
-                    <div className="flex-1">
+                    <div className="flex-1 space-y-1.5">
                       <label className="bg-white border border-brand-pink/50 text-brand-darkPink font-bold px-3 py-2 rounded-xl text-xs block text-center cursor-pointer shadow-sm active:scale-95 transition-all">
                         <span>📷 Cambiar Logo desde Fotos</span>
                         <input type="file" accept="image/*" onChange={handleLogoUpload} className="hidden" />
                       </label>
-                      <span className="text-[10px] text-gray-400 mt-1 block text-center">Se comprime automáticamente para no saturar memoria.</span>
+                      {state.business.customLogo && (
+                        <button
+                          onClick={removeLogo}
+                          className="w-full text-[11px] text-gray-400 hover:text-rose-500 font-semibold text-center block py-1"
+                        >
+                          Restablecer logo original
+                        </button>
+                      )}
+                      <span className="text-[10px] text-gray-400 block text-center">Se adapta automáticamente sin recortar bordes ni textos.</span>
                     </div>
                   </div>
                 </div>
