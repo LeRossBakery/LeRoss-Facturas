@@ -87,7 +87,15 @@
   <script type="text/babel">
     const { useState, useEffect, useMemo, useRef } = React;
 
-    const BANK_DETAILS = `LeRoss Bakery — Cuentas para Transferencias 🧁\n\n• Banco Popular Corriente:\n000-000000-0\n• Banreservas Corriente:\n000-000000-0\n• BHD Corriente:\n000-000000-0\n\nA nombre de: Rosnellys Matos Guzmán\nPor favor enviar comprobante por este chat.`;
+    const DEFAULT_SETTINGS = {
+      businessName: "LeRoss Bakery",
+      phone: "849-441-1315",
+      instagram: "@lerossbakery",
+      address: "Santo Domingo Este, República Dominicana",
+      rnc: "",
+      logo: "",
+      bankDetails: `LeRoss Bakery — Cuentas para Transferencias 🧁\n\n• Banco Popular Corriente:\n000-000000-0\n• Banreservas Corriente:\n000-000000-0\n• BHD Corriente:\n000-000000-0\n\nA nombre de: Rosnellys Matos Guzmán\nPor favor enviar comprobante de pago por este chat.`
+    };
 
     const formatRD = (val) => "RD$ " + Number(val || 0).toLocaleString("es-DO", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const formatWholeRD = (val) => "RD$ " + Number(val || 0).toLocaleString("es-DO", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
@@ -128,8 +136,12 @@
         customers: [],
         expenses: [],
         simulations: [],
-        webOrders: []
+        webOrders: [],
+        settings: DEFAULT_SETTINGS
       });
+
+      // Estados para edición en Ajustes
+      const [settingsForm, setSettingsForm] = useState(DEFAULT_SETTINGS);
 
       const prevOrdersCount = useRef(0);
 
@@ -139,8 +151,9 @@
       };
 
       const handleCopyBank = () => {
+        const textToCopy = (data.settings && data.settings.bankDetails) ? data.settings.bankDetails : DEFAULT_SETTINGS.bankDetails;
         if (navigator.clipboard) {
-          navigator.clipboard.writeText(BANK_DETAILS);
+          navigator.clipboard.writeText(textToCopy);
           showToast("Datos bancarios copiados al portapapeles");
         } else {
           showToast("No se pudo copiar automáticamente");
@@ -166,14 +179,19 @@
               }
               prevOrdersCount.current = pendingCount;
 
+              const mergedSettings = { ...DEFAULT_SETTINGS, ...(res.settings || {}) };
+
               setData({
                 invoices: res.invoices || [],
                 products: res.products || [],
                 customers: res.customers || [],
                 expenses: res.expenses || [],
                 simulations: res.simulations || [],
-                webOrders: orders
+                webOrders: orders,
+                settings: mergedSettings
               });
+
+              setSettingsForm(mergedSettings);
               setCloudStatus("synced");
             } else {
               setCloudStatus("empty");
@@ -187,6 +205,61 @@
 
         return () => unsubscribe();
       }, []);
+
+      // GUARDAR AJUSTES DE EMPRESA (LOGO, BANCOS, IG, WHATSAPP)
+      const handleSaveSettings = async (e) => {
+        e.preventDefault();
+        try {
+          if (db) {
+            await db.collection("leross_app").doc("main_data").set({
+              settings: settingsForm
+            }, { merge: true });
+            setIsAjustesOpen(false);
+            showToast("Ajustes y Marca guardados con éxito");
+          }
+        } catch (err) {
+          console.error("Error guardando ajustes:", err);
+          showToast("Error al guardar ajustes");
+        }
+      };
+
+      // PROCESADOR DE LOGO HD EN AJUSTES
+      const handleLogoUpload = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement("canvas");
+            const maxSize = 400;
+            let width = img.width;
+            let height = img.height;
+            if (width > height) {
+              if (width > maxSize) {
+                height = Math.round((height * maxSize) / width);
+                width = maxSize;
+              }
+            } else {
+              if (height > maxSize) {
+                width = Math.round((width * maxSize) / height);
+                height = maxSize;
+              }
+            }
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext("2d");
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = "high";
+            ctx.drawImage(img, 0, 0, width, height);
+            const dataUrl = canvas.toDataURL("image/png", 0.9);
+            setSettingsForm(prev => ({ ...prev, logo: dataUrl }));
+            showToast("Logo cargado (pulsa Guardar Ajustes)");
+          };
+          img.src = event.target.result;
+        };
+        reader.readAsDataURL(file);
+      };
 
       // MAPEO EXACTO Y SEGURO DE NÚMEROS DE FACTURA (CORRIGE inv_179...)
       const sortedChronologicalInvoices = useMemo(() => {
@@ -301,7 +374,7 @@
 
       // Filtro y Búsqueda
       const [searchQuery, setSearchQuery] = useState("");
-      const [statusFilter, setStatusFilter] = useState("Pendientes"); // Pendientes, Todas, Pagadas, Anuladas
+      const [statusFilter, setStatusFilter] = useState("Pendientes");
       const [viewingInvoice, setViewingInvoice] = useState(null);
       const [isCreatingInvoice, setIsCreatingInvoice] = useState(false);
 
@@ -321,7 +394,7 @@
         });
       }, [data.invoices, searchQuery, statusFilter, sortedChronologicalInvoices]);
 
-      // Formulario Nueva Factura
+      // Formulario Nueva Factura Manual
       const [invCustomerName, setInvCustomerName] = useState("");
       const [invCustomerPhone, setInvCustomerPhone] = useState("");
       const [invDeliveryDate, setInvDeliveryDate] = useState("");
@@ -350,11 +423,6 @@
           }
           return line;
         }));
-      };
-
-      const removeInvoiceLine = (id) => {
-        if (invItems.length <= 1) return;
-        setInvItems(prev => prev.filter(i => i.id !== id));
       };
 
       const handleSaveManualInvoice = async (e) => {
@@ -406,7 +474,6 @@
         }
       };
 
-      // Actualizar estado de factura mediante dropdown
       const handleUpdateInvoiceStatus = async (invId, newStatus) => {
         const isAnulada = newStatus === "Anulada";
         const updated = (data.invoices || []).map(i => {
@@ -439,7 +506,7 @@
 
       const handleSendInvoiceWhatsApp = (inv) => {
         const dispId = getInvoiceDisplayNumber(inv);
-        let msg = `*LeRoss Bakery — Factura Oficial ${dispId}* 🧁\n\n`;
+        let msg = `*${data.settings?.businessName || 'LeRoss Bakery'} — Factura Oficial ${dispId}* 🧁\n\n`;
         if (inv.sourceOrderId) msg += `📋 *Referencia:* ${inv.sourceOrderId}\n`;
         msg += `👤 *Cliente:* ${inv.customer?.name || inv.customerName || "Cliente"}\n`;
         msg += `📅 *Fecha:* ${formatDate(inv.date)}\n`;
@@ -448,12 +515,10 @@
         (inv.items || []).forEach(it => {
           msg += `• ${it.quantity}x ${it.name} — ${formatRD(it.total)}\n`;
         });
-        if (Number(inv.shippingFee) > 0) {
-          msg += `• Envío a Domicilio — ${formatRD(inv.shippingFee)}\n`;
-        }
         msg += `\n💰 *Total:* ${formatRD(inv.calculation?.total || inv.total)}\n`;
         msg += `📌 *Estado de Pago:* ${inv.paymentStatus === 'Pagada' ? 'PAGADA ✓' : 'PENDIENTE'}\n\n`;
-        msg += `¡Muchas gracias por preferir a LeRoss Bakery!`;
+        if (data.settings?.instagram) msg += `Instagram: ${data.settings.instagram}\n`;
+        msg += `¡Muchas gracias por preferir a ${data.settings?.businessName || 'LeRoss Bakery'}!`;
 
         const phone = (inv.customer?.phone || "").replace(/\D/g, "");
         const url = phone ? `https://wa.me/1${phone}?text=${encodeURIComponent(msg)}` : `https://wa.me/?text=${encodeURIComponent(msg)}`;
@@ -467,7 +532,7 @@
       const [prodPrice, setProdPrice] = useState("");
       const [prodImage, setProdImage] = useState("");
 
-      const handleImageUpload = (e) => {
+      const handleProductImageUpload = (e) => {
         const file = e.target.files[0];
         if (!file) return;
         const reader = new FileReader();
@@ -526,7 +591,7 @@
             setProdName("");
             setProdPrice("");
             setProdImage("");
-            showToast("Postre guardado");
+            showToast("Postre guardado en el menú");
           }
         } catch (err) {
           console.error(err);
@@ -687,15 +752,22 @@
           )}
 
           {/* ======================================================== */}
-          {/* HEADER: CON TUERCA ⚙️ EN ESQUINA SUPERIOR DERECHA        */}
+          {/* HEADER: CON LOGO REAL Y TUERCA ⚙️ EN ESQUINA DERECHA     */}
           {/* ======================================================== */}
           <header className="flex items-center justify-between pb-3">
             <div className="flex items-center space-x-2.5">
-              <div className="w-10 h-10 rounded-2xl bg-[#FDECEF] border border-[#F8D5DE] flex items-center justify-center text-xl shadow-2xs">
-                🧁
+              {/* Logo Oficial de la Empresa o Emblema */}
+              <div className="w-10 h-10 rounded-2xl bg-[#FDECEF] border border-[#F8D5DE] flex items-center justify-center overflow-hidden shadow-2xs">
+                {data.settings?.logo ? (
+                  <img src={data.settings.logo} alt="Logo LeRoss" className="w-full h-full object-cover" />
+                ) : (
+                  <span className="text-xl">🧁</span>
+                )}
               </div>
               <div>
-                <h1 className="text-base font-extrabold text-gray-900 leading-tight">LeRoss Bakery</h1>
+                <h1 className="text-base font-extrabold text-gray-900 leading-tight">
+                  {data.settings?.businessName || "LeRoss Bakery"}
+                </h1>
                 <div className="flex items-center space-x-1.5 mt-0.5">
                   <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
                   <span className="text-[11px] font-medium text-gray-500">Nube Activa</span>
@@ -712,11 +784,11 @@
                 <span>Copiar Banco</span>
               </button>
 
-              {/* Tuerca de Ajustes en la esquina superior derecha sin palabra */}
+              {/* Tuerca ⚙️ de Ajustes en la esquina superior derecha */}
               <button
                 onClick={() => setIsAjustesOpen(true)}
-                className="w-8 h-8 rounded-full bg-white hover:bg-gray-50 border border-gray-200/90 text-gray-600 flex items-center justify-center text-sm active:scale-95 transition-all shadow-2xs"
-                title="Configuración"
+                className="w-8 h-8 rounded-full bg-white hover:bg-gray-50 border border-gray-200/90 text-gray-700 flex items-center justify-center text-sm active:scale-95 transition-all shadow-2xs"
+                title="Ajustes y Configuración"
               >
                 ⚙️
               </button>
@@ -724,7 +796,7 @@
           </header>
 
           {/* ======================================================== */}
-          {/* PESTAÑA: FACTURAS                                        */}
+          {/* PESTAÑA: FACTURAS (EXACTA IMAGEN 2 CON BOTÓN +)          */}
           {/* ======================================================== */}
           {tab === "invoices" && (
             <div className="space-y-3.5 pt-1 animate-in fade-in duration-150">
@@ -802,7 +874,7 @@
                 </div>
               )}
 
-              {/* BARRA: BÚSQUEDA + DROPDOWN DE ESTADO + BOTÓN + INTEGRADO */}
+              {/* BARRA: BÚSQUEDA + DROPDOWN LIMPIO + BOTÓN + */}
               <div className="flex space-x-2 pt-1">
                 <input
                   type="text"
@@ -812,7 +884,6 @@
                   className="flex-1 bg-white border border-gray-200/90 rounded-xl px-3.5 py-2 text-xs text-gray-800 placeholder-gray-400 outline-none focus:border-[#E5839B] shadow-2xs"
                 />
 
-                {/* Dropdown limpio de estado */}
                 <select
                   value={statusFilter}
                   onChange={e => setStatusFilter(e.target.value)}
@@ -824,7 +895,6 @@
                   <option value="Anuladas">Anuladas ↕</option>
                 </select>
 
-                {/* Signo + dentro de Facturas para crear nueva manual */}
                 <button
                   onClick={() => setIsCreatingInvoice(true)}
                   className="w-9 h-9 bg-brand-charcoal hover:bg-black text-white rounded-xl flex items-center justify-center font-bold text-lg shadow-2xs active:scale-95 transition-all flex-shrink-0"
@@ -894,8 +964,11 @@
                 <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
                   <div className="bg-white w-full max-w-sm rounded-3xl p-6 space-y-4 shadow-2xl" id="printable-receipt">
                     <div className="text-center border-b border-gray-100 pb-3">
-                      <h2 className="text-base font-black text-gray-900">LeRoss Bakery</h2>
-                      <span className="text-[11px] text-gray-400">Repostería Artesanal · Santo Domingo Este</span>
+                      {data.settings?.logo && (
+                        <img src={data.settings.logo} alt="Logo" className="w-12 h-12 mx-auto rounded-2xl object-cover mb-2" />
+                      )}
+                      <h2 className="text-base font-black text-gray-900">{data.settings?.businessName || 'LeRoss Bakery'}</h2>
+                      <span className="text-[11px] text-gray-400">{data.settings?.address || 'Santo Domingo Este'}</span>
                       <div className="text-xs font-bold text-[#D46B84] mt-1">{getInvoiceDisplayNumber(viewingInvoice)}</div>
                     </div>
 
@@ -960,7 +1033,7 @@
                 </div>
               )}
 
-              {/* MODAL CREAR NUEVA FACTURA (ACTIVADO POR EL BOTÓN +) */}
+              {/* MODAL CREAR NUEVA FACTURA (BOTÓN +) */}
               {isCreatingInvoice && (
                 <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
                   <form onSubmit={handleSaveManualInvoice} className="bg-white w-full max-w-sm rounded-3xl p-5 space-y-3.5 shadow-2xl">
@@ -1100,12 +1173,6 @@
                     )}
                   </div>
                 ))}
-
-                {(data.customers || []).length === 0 && (
-                  <div className="text-center py-12 text-xs text-gray-400">
-                    Aún no hay clientes registrados en el directorio.
-                  </div>
-                )}
               </div>
             </div>
           )}
@@ -1167,7 +1234,7 @@
 
                   <div>
                     <label className="text-[10px] text-gray-400 block mb-1">Foto Retina (800x800)</label>
-                    <input type="file" accept="image/*" onChange={handleImageUpload} className="text-xs text-gray-500" />
+                    <input type="file" accept="image/*" onChange={handleProductImageUpload} className="text-xs text-gray-500" />
                     {prodImage && (
                       <div className="mt-2 w-12 h-12 rounded-xl overflow-hidden border">
                         <img src={prodImage} className="w-full h-full object-cover" />
@@ -1466,35 +1533,119 @@
           )}
 
           {/* ======================================================== */}
-          {/* MODAL DE AJUSTES (ABIERTO POR LA TUERCA ⚙️)               */}
+          {/* MODAL AJUSTES Y MARCA (ABIERTO POR LA TUERCA ⚙️)         */}
           {/* ======================================================== */}
           {isAjustesOpen && (
             <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-              <div className="bg-white w-full max-w-sm rounded-3xl p-6 space-y-4 shadow-2xl">
-                <div className="flex justify-between items-center border-b pb-3">
-                  <h3 className="text-base font-extrabold text-gray-900">Configuración</h3>
-                  <button onClick={() => setIsAjustesOpen(false)} className="text-gray-400 text-lg">✕</button>
+              <form onSubmit={handleSaveSettings} className="bg-white w-full max-w-sm rounded-3xl p-5 space-y-3.5 shadow-2xl max-h-[90vh] overflow-y-auto">
+                <div className="flex justify-between items-center border-b pb-2">
+                  <h3 className="text-sm font-extrabold text-gray-900">Ajustes & Marca LeRoss</h3>
+                  <button type="button" onClick={() => setIsAjustesOpen(false)} className="text-gray-400">✕</button>
                 </div>
 
-                <div className="space-y-3 text-xs text-gray-600">
-                  <div className="p-3 bg-gray-50 rounded-2xl space-y-1">
-                    <span className="font-bold text-gray-800 block">Estado del Sistema</span>
-                    <p className="text-[11px] text-gray-500">Conectado a Firebase Firestore en tiempo real.</p>
-                  </div>
-
-                  <div className="p-3 bg-[#FAF7F8] rounded-2xl space-y-1">
-                    <span className="font-bold text-gray-800 block">Datos Bancarios</span>
-                    <p className="text-[11px] text-gray-500">Se copian automáticamente al tocar el botón en la cabecera.</p>
+                {/* Subir Logo Oficial */}
+                <div>
+                  <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider block mb-1">Logo Oficial de la Empresa</label>
+                  <div className="flex items-center space-x-3 bg-gray-50 p-2.5 rounded-2xl border border-gray-200/80">
+                    <div className="w-12 h-12 rounded-xl bg-white border border-gray-200 overflow-hidden flex items-center justify-center flex-shrink-0">
+                      {settingsForm.logo ? (
+                        <img src={settingsForm.logo} alt="Logo" className="w-full h-full object-cover" />
+                      ) : (
+                        <span className="text-2xl">🧁</span>
+                      )}
+                    </div>
+                    <div className="flex-1">
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={handleLogoUpload}
+                        className="text-xs text-gray-500 w-full"
+                      />
+                      <span className="text-[9.5px] text-gray-400 block mt-0.5">Se actualiza en cabecera y facturas</span>
+                    </div>
                   </div>
                 </div>
 
-                <button
-                  onClick={() => setIsAjustesOpen(false)}
-                  className="w-full bg-brand-charcoal text-white text-xs font-bold py-2.5 rounded-xl shadow-xs"
-                >
-                  Listo
-                </button>
-              </div>
+                {/* Datos del Negocio */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-400 block mb-1">Nombre Comercial</label>
+                    <input
+                      type="text"
+                      value={settingsForm.businessName}
+                      onChange={e => setSettingsForm({ ...settingsForm, businessName: e.target.value })}
+                      className="w-full bg-[#FAF7F8] border border-gray-200 rounded-xl px-2.5 py-1.5 text-xs font-bold outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-400 block mb-1">Instagram</label>
+                    <input
+                      type="text"
+                      placeholder="@lerossbakery"
+                      value={settingsForm.instagram}
+                      onChange={e => setSettingsForm({ ...settingsForm, instagram: e.target.value })}
+                      className="w-full bg-[#FAF7F8] border border-gray-200 rounded-xl px-2.5 py-1.5 text-xs font-semibold outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-400 block mb-1">WhatsApp / Teléfono</label>
+                    <input
+                      type="text"
+                      placeholder="849-441-1315"
+                      value={settingsForm.phone}
+                      onChange={e => setSettingsForm({ ...settingsForm, phone: e.target.value })}
+                      className="w-full bg-[#FAF7F8] border border-gray-200 rounded-xl px-2.5 py-1.5 text-xs outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-400 block mb-1">RNC (Opcional)</label>
+                    <input
+                      type="text"
+                      placeholder="000-00000-0"
+                      value={settingsForm.rnc}
+                      onChange={e => setSettingsForm({ ...settingsForm, rnc: e.target.value })}
+                      className="w-full bg-[#FAF7F8] border border-gray-200 rounded-xl px-2.5 py-1.5 text-xs outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-bold text-gray-400 block mb-1">Ubicación / Dirección</label>
+                  <input
+                    type="text"
+                    value={settingsForm.address}
+                    onChange={e => setSettingsForm({ ...settingsForm, address: e.target.value })}
+                    className="w-full bg-[#FAF7F8] border border-gray-200 rounded-xl px-2.5 py-1.5 text-xs outline-none"
+                  />
+                </div>
+
+                {/* Cuentas Bancarias / Texto Copiar Banco */}
+                <div>
+                  <div className="flex justify-between items-center mb-1">
+                    <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Cuentas Bancarias & Datos de Pago</label>
+                    <span className="text-[9.5px] text-[#D46B84] font-semibold">Alimenta el botón Copiar Banco</span>
+                  </div>
+                  <textarea
+                    rows="6"
+                    value={settingsForm.bankDetails}
+                    onChange={e => setSettingsForm({ ...settingsForm, bankDetails: e.target.value })}
+                    className="w-full bg-[#FAF7F8] border border-gray-200 rounded-xl p-2.5 text-xs text-gray-700 outline-none leading-relaxed font-mono"
+                    placeholder="Escribe aquí los bancos, números de cuenta, cédula y titular..."
+                  ></textarea>
+                </div>
+
+                <div className="pt-1">
+                  <button
+                    type="submit"
+                    className="w-full bg-brand-charcoal text-white text-xs font-bold py-3 rounded-2xl shadow-xs active:scale-98 transition-all"
+                  >
+                    Guardar Ajustes & Marca
+                  </button>
+                </div>
+              </form>
             </div>
           )}
 
