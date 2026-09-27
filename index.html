@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>LeRoss Bakery — Control</title>
+  <title>LeRoss Bakery — Facturación</title>
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <link rel="apple-touch-icon" href="https://img.icons8.com/cotton/128/cupcake--v1.png">
@@ -87,7 +87,8 @@
   <script type="text/babel">
     const { useState, useEffect, useMemo, useRef } = React;
 
-    const WHATSAPP_PHONE = "18494411315";
+    const BANK_DETAILS = `LeRoss Bakery — Cuentas para Transferencias 🧁\n\n• Banco Popular Corriente:\n000-000000-0\n• Banreservas Corriente:\n000-000000-0\n• BHD Corriente:\n000-000000-0\n\nA nombre de: Rosnellys Matos Guzmán\nPor favor enviar comprobante por este chat.`;
+
     const formatRD = (val) => "RD$ " + Number(val || 0).toLocaleString("es-DO", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const formatWholeRD = (val) => "RD$ " + Number(val || 0).toLocaleString("es-DO", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
     const formatDate = (dateStr) => {
@@ -115,20 +116,11 @@
       } catch (e) {}
     };
 
-    // Función pura para determinar el siguiente correlativo FAC-XXXX
-    const calculateNextInvoiceId = (invoices) => {
-      const maxNum = (invoices || []).reduce((max, inv) => {
-        const match = (inv.id || "").match(/FAC-(\d+)/);
-        const num = match ? parseInt(match[1], 10) : 0;
-        return Math.max(max, num);
-      }, 0);
-      return "FAC-" + String(maxNum + 1).padStart(4, "0");
-    };
-
     function App() {
-      const [tab, setTab] = useState("invoices"); // webOrders, invoices, menu, finances, simulator
+      const [tab, setTab] = useState("invoices"); // invoices, customers, menu, finances, simulator
       const [cloudStatus, setCloudStatus] = useState("connecting");
       const [toastMsg, setToastMsg] = useState("");
+      const [isAjustesOpen, setIsAjustesOpen] = useState(false);
 
       const [data, setData] = useState({
         invoices: [],
@@ -144,6 +136,15 @@
       const showToast = (msg) => {
         setToastMsg(msg);
         setTimeout(() => setToastMsg(""), 3000);
+      };
+
+      const handleCopyBank = () => {
+        if (navigator.clipboard) {
+          navigator.clipboard.writeText(BANK_DETAILS);
+          showToast("Datos bancarios copiados al portapapeles");
+        } else {
+          showToast("No se pudo copiar automáticamente");
+        }
       };
 
       useEffect(() => {
@@ -187,36 +188,69 @@
         return () => unsubscribe();
       }, []);
 
-      // Próximo número de factura oficial proyectado
-      const nextDefiniteInvoiceId = useMemo(() => {
-        return calculateNextInvoiceId(data.invoices);
+      // MAPEO EXACTO Y SEGURO DE NÚMEROS DE FACTURA (CORRIGE inv_179...)
+      const sortedChronologicalInvoices = useMemo(() => {
+        return [...(data.invoices || [])].sort((a, b) => {
+          const tA = a.createdAt || a.date || "";
+          const tB = b.createdAt || b.date || "";
+          return tA.localeCompare(tB);
+        });
       }, [data.invoices]);
 
-      // =============================================================
-      // 1. PEDIDOS WEB (FLUJO TEMPORAL -> DEFINITIVO)
-      // =============================================================
+      const getInvoiceDisplayNumber = (inv) => {
+        if (inv.number && /^FAC-\d+/.test(inv.number)) return inv.number;
+        if (inv.id && /^FAC-\d+/.test(inv.id)) return inv.id;
+
+        const idx = sortedChronologicalInvoices.findIndex(item => item.id === inv.id);
+        if (idx !== -1) {
+          return "FAC-" + String(idx + 1).padStart(4, "0");
+        }
+        return "FAC-0001";
+      };
+
+      const nextInvoiceNumber = useMemo(() => {
+        const maxNum = (data.invoices || []).reduce((max, inv) => {
+          const match = (inv.number || "").match(/FAC-(\d+)/) || (inv.id || "").match(/FAC-(\d+)/);
+          const num = match ? parseInt(match[1], 10) : 0;
+          return Math.max(max, num);
+        }, 0);
+
+        const count = Math.max(maxNum, (data.invoices || []).length);
+        return "FAC-" + String(count + 1).padStart(4, "0");
+      }, [data.invoices]);
+
+      // Métricas Superiores
+      const topMetrics = useMemo(() => {
+        const validInvoices = (data.invoices || []).filter(inv => inv.state !== "Anulada");
+        const totalFacturado = validInvoices.reduce((acc, inv) => acc + Number(inv.calculation?.total || inv.total || 0), 0);
+        const totalPorCobrar = validInvoices
+          .filter(inv => inv.paymentStatus === "Pendiente")
+          .reduce((acc, inv) => acc + Number(inv.calculation?.total || inv.total || 0), 0);
+
+        return { totalFacturado, totalPorCobrar };
+      }, [data.invoices]);
+
+      // Pedidos Web Pendientes
       const pendingWebOrders = useMemo(() => {
         return (data.webOrders || []).filter(o => o.status === "Pendiente");
       }, [data.webOrders]);
 
-      // CONFIRMACIÓN DIRECTA EN 1 TOQUE
-      const handleConfirmWebOrder = async (order) => {
-        const definiteId = calculateNextInvoiceId(data.invoices);
-
+      const handleAcceptWebOrder = async (order) => {
+        const definiteNumber = nextInvoiceNumber;
         const subtotal = Number(order.subtotal || 0);
+
         const newInvoice = {
-          id: definiteId,
-          sourceOrderId: order.id, // Referencia al código temporal ORD-XXXX
+          id: definiteNumber,
+          number: definiteNumber,
+          sourceOrderId: order.id,
           date: new Date().toISOString().split("T")[0],
           customer: {
-            name: order.customerName || "Cliente Web",
+            name: order.customerName || "Cliente",
             phone: order.customerPhone || "",
-            rnc: "",
             address: order.deliveryAddress || ""
           },
           deliveryDate: order.deliveryDate || "",
           deliveryTime: order.deliveryTime || "",
-          deliveryType: order.deliveryType || "Pickup",
           items: (order.items || []).map(it => ({
             name: it.name,
             quantity: Number(it.quantity || 1),
@@ -231,52 +265,30 @@
           createdAt: new Date().toISOString()
         };
 
-        // Actualizar el estado del pedido web a Confirmada con el enlace a su factura definitiva
         const updatedOrders = (data.webOrders || []).map(o => {
           if (o.id === order.id) {
-            return {
-              ...o,
-              status: "Confirmada",
-              assignedInvoiceId: definiteId,
-              confirmedAt: new Date().toISOString()
-            };
+            return { ...o, status: "Confirmada", assignedInvoiceId: definiteNumber };
           }
           return o;
         });
-
-        // Actualizar directorio de clientes
-        const customerList = [...(data.customers || [])];
-        const existingIdx = customerList.findIndex(c => c.name.toLowerCase() === newInvoice.customer.name.toLowerCase());
-        if (existingIdx >= 0) {
-          customerList[existingIdx] = { ...customerList[existingIdx], ...newInvoice.customer };
-        } else {
-          customerList.push({ id: "cust_" + Date.now(), ...newInvoice.customer });
-        }
 
         try {
           if (db) {
             await db.collection("leross_app").doc("main_data").update({
               invoices: [newInvoice, ...(data.invoices || [])],
-              webOrders: updatedOrders,
-              customers: customerList
+              webOrders: updatedOrders
             });
-
-            showToast(`✓ ${order.id} confirmado bajo Factura ${definiteId}`);
-            setViewingInvoice(newInvoice); // Abre el recibo directamente listo para WhatsApp o imprimir
+            showToast(`✓ Pedido ${order.id} convertido a ${definiteNumber}`);
+            setViewingInvoice(newInvoice);
           }
         } catch (err) {
-          console.error("Error confirmando pedido web:", err);
-          showToast("Error de conexión");
+          console.error(err);
         }
       };
 
       const handleRejectWebOrder = async (orderId) => {
         if (!confirm("¿Deseas rechazar este pedido web?")) return;
-        const updated = (data.webOrders || []).map(o => {
-          if (o.id === orderId) return { ...o, status: "Rechazada" };
-          return o;
-        });
-
+        const updated = (data.webOrders || []).map(o => o.id === orderId ? { ...o, status: "Rechazada" } : o);
         try {
           if (db) {
             await db.collection("leross_app").doc("main_data").update({ webOrders: updated });
@@ -287,32 +299,34 @@
         }
       };
 
-      // =============================================================
-      // 2. FACTURAS MANUALES Y RECIBOS
-      // =============================================================
-      const [isCreatingInvoice, setIsCreatingInvoice] = useState(false);
+      // Filtro y Búsqueda
+      const [searchQuery, setSearchQuery] = useState("");
+      const [statusFilter, setStatusFilter] = useState("Pendientes"); // Pendientes, Todas, Pagadas, Anuladas
       const [viewingInvoice, setViewingInvoice] = useState(null);
-      const [invFilter, setInvFilter] = useState("all");
+      const [isCreatingInvoice, setIsCreatingInvoice] = useState(false);
 
+      const filteredInvoices = useMemo(() => {
+        return (data.invoices || []).filter(inv => {
+          const displayNum = getInvoiceDisplayNumber(inv).toLowerCase();
+          const custName = (inv.customer?.name || inv.customerName || inv.clientName || "").toLowerCase();
+          const q = searchQuery.toLowerCase().trim();
+
+          const matchesQuery = !q || displayNum.includes(q) || custName.includes(q);
+          if (!matchesQuery) return false;
+
+          if (statusFilter === "Pendientes") return inv.paymentStatus === "Pendiente" && inv.state !== "Anulada";
+          if (statusFilter === "Pagadas") return inv.paymentStatus === "Pagada" && inv.state !== "Anulada";
+          if (statusFilter === "Anuladas") return inv.state === "Anulada";
+          return true;
+        });
+      }, [data.invoices, searchQuery, statusFilter, sortedChronologicalInvoices]);
+
+      // Formulario Nueva Factura
       const [invCustomerName, setInvCustomerName] = useState("");
       const [invCustomerPhone, setInvCustomerPhone] = useState("");
-      const [invCustomerRnc, setInvCustomerRnc] = useState("");
-      const [invDeliveryAddress, setInvDeliveryAddress] = useState("");
       const [invDeliveryDate, setInvDeliveryDate] = useState("");
-      const [invPaymentStatus, setInvPaymentStatus] = useState("Pagada");
-      const [invNotes, setInvNotes] = useState("");
-      const [invShippingFee, setInvShippingFee] = useState(0);
+      const [invPaymentStatus, setInvPaymentStatus] = useState("Pendiente");
       const [invItems, setInvItems] = useState([{ id: 1, name: "", quantity: 1, price: 0, total: 0 }]);
-
-      const handleSelectExistingCustomer = (cName) => {
-        setInvCustomerName(cName);
-        const found = (data.customers || []).find(c => c.name.toLowerCase() === cName.toLowerCase());
-        if (found) {
-          if (found.phone) setInvCustomerPhone(found.phone);
-          if (found.rnc) setInvCustomerRnc(found.rnc);
-          if (found.address) setInvDeliveryAddress(found.address);
-        }
-      };
 
       const addInvoiceLine = () => {
         setInvItems(prev => [...prev, { id: Date.now(), name: "", quantity: 1, price: 0, total: 0 }]);
@@ -347,26 +361,23 @@
         e.preventDefault();
         if (!invCustomerName.trim()) return alert("Indica el nombre del cliente.");
 
-        const definiteId = calculateNextInvoiceId(data.invoices);
+        const definiteNumber = nextInvoiceNumber;
         const subtotal = invItems.reduce((acc, it) => acc + (Number(it.total) || 0), 0);
-        const total = subtotal + Number(invShippingFee || 0);
 
         const newInv = {
-          id: definiteId,
+          id: definiteNumber,
+          number: definiteNumber,
           date: new Date().toISOString().split("T")[0],
           customer: {
             name: invCustomerName.trim(),
-            phone: invCustomerPhone.trim(),
-            rnc: invCustomerRnc.trim(),
-            address: invDeliveryAddress.trim()
+            phone: invCustomerPhone.trim()
           },
           deliveryDate: invDeliveryDate,
           items: invItems.filter(it => it.name.trim() !== ""),
-          shippingFee: Number(invShippingFee || 0),
-          calculation: { subtotal, total },
+          shippingFee: 0,
+          calculation: { subtotal, total: subtotal },
           paymentStatus: invPaymentStatus,
           state: "Válida",
-          notes: invNotes.trim(),
           createdAt: new Date().toISOString()
         };
 
@@ -385,34 +396,41 @@
               customers: customerList
             });
             setIsCreatingInvoice(false);
-            showToast(`Factura ${newInv.id} creada`);
+            setInvCustomerName("");
+            setInvCustomerPhone("");
+            setInvItems([{ id: 1, name: "", quantity: 1, price: 0, total: 0 }]);
+            showToast(`Factura ${definiteNumber} emitida`);
           }
         } catch (err) {
           console.error(err);
         }
       };
 
-      const handleTogglePaymentStatus = async (invId, currentStatus) => {
-        const nextStatus = currentStatus === "Pagada" ? "Pendiente" : "Pagada";
-        const updated = (data.invoices || []).map(i => i.id === invId ? { ...i, paymentStatus: nextStatus } : i);
-        try {
-          if (db) {
-            await db.collection("leross_app").doc("main_data").update({ invoices: updated });
-            showToast(`Estado: ${nextStatus}`);
+      // Actualizar estado de factura mediante dropdown
+      const handleUpdateInvoiceStatus = async (invId, newStatus) => {
+        const isAnulada = newStatus === "Anulada";
+        const updated = (data.invoices || []).map(i => {
+          if (i.id === invId) {
+            return {
+              ...i,
+              state: isAnulada ? "Anulada" : "Válida",
+              paymentStatus: isAnulada ? i.paymentStatus : newStatus
+            };
           }
-        } catch (err) {
-          console.error(err);
-        }
-      };
+          return i;
+        });
 
-      const handleAnularInvoice = async (invId) => {
-        if (!confirm("¿Deseas anular esta factura?")) return;
-        const updated = (data.invoices || []).map(i => i.id === invId ? { ...i, state: "Anulada" } : i);
         try {
           if (db) {
             await db.collection("leross_app").doc("main_data").update({ invoices: updated });
-            setViewingInvoice(null);
-            showToast("Factura anulada");
+            showToast(`Estado actualizado: ${newStatus}`);
+            if (viewingInvoice && viewingInvoice.id === invId) {
+              setViewingInvoice(prev => ({
+                ...prev,
+                state: isAnulada ? "Anulada" : "Válida",
+                paymentStatus: isAnulada ? prev.paymentStatus : newStatus
+              }));
+            }
           }
         } catch (err) {
           console.error(err);
@@ -420,11 +438,10 @@
       };
 
       const handleSendInvoiceWhatsApp = (inv) => {
-        let msg = `*LeRoss Bakery — Factura Oficial ${inv.id}* 🧁\n\n`;
-        if (inv.sourceOrderId) {
-          msg += `📋 *Referencia Pedido:* ${inv.sourceOrderId}\n`;
-        }
-        msg += `👤 *Cliente:* ${inv.customer?.name}\n`;
+        const dispId = getInvoiceDisplayNumber(inv);
+        let msg = `*LeRoss Bakery — Factura Oficial ${dispId}* 🧁\n\n`;
+        if (inv.sourceOrderId) msg += `📋 *Referencia:* ${inv.sourceOrderId}\n`;
+        msg += `👤 *Cliente:* ${inv.customer?.name || inv.customerName || "Cliente"}\n`;
         msg += `📅 *Fecha:* ${formatDate(inv.date)}\n`;
         if (inv.deliveryDate) msg += `🚗 *Entrega:* ${formatDate(inv.deliveryDate)}\n`;
         msg += `\n*Detalle de Postres:*\n`;
@@ -434,23 +451,20 @@
         if (Number(inv.shippingFee) > 0) {
           msg += `• Envío a Domicilio — ${formatRD(inv.shippingFee)}\n`;
         }
-        msg += `\n💰 *Total:* ${formatRD(inv.calculation?.total)}\n`;
+        msg += `\n💰 *Total:* ${formatRD(inv.calculation?.total || inv.total)}\n`;
         msg += `📌 *Estado de Pago:* ${inv.paymentStatus === 'Pagada' ? 'PAGADA ✓' : 'PENDIENTE'}\n\n`;
-        msg += `¡Gracias por elegir a LeRoss Bakery!`;
+        msg += `¡Muchas gracias por preferir a LeRoss Bakery!`;
 
         const phone = (inv.customer?.phone || "").replace(/\D/g, "");
         const url = phone ? `https://wa.me/1${phone}?text=${encodeURIComponent(msg)}` : `https://wa.me/?text=${encodeURIComponent(msg)}`;
         window.open(url, "_blank");
       };
 
-      // =============================================================
-      // 3. MENÚ (800x800 RETINA)
-      // =============================================================
+      // Catálogo Menú
       const [isAddingProduct, setIsAddingProduct] = useState(false);
       const [prodName, setProdName] = useState("");
       const [prodCategory, setProdCategory] = useState("Tres Leches");
       const [prodPrice, setProdPrice] = useState("");
-      const [prodDesc, setProdDesc] = useState("");
       const [prodImage, setProdImage] = useState("");
 
       const handleImageUpload = (e) => {
@@ -481,8 +495,7 @@
             ctx.imageSmoothingEnabled = true;
             ctx.imageSmoothingQuality = "high";
             ctx.drawImage(img, 0, 0, width, height);
-            const dataUrl = canvas.toDataURL("image/jpeg", 0.82);
-            setProdImage(dataUrl);
+            setProdImage(canvas.toDataURL("image/jpeg", 0.82));
             showToast("Foto optimizada (800x800)");
           };
           img.src = event.target.result;
@@ -492,15 +505,14 @@
 
       const handleSaveProduct = async (e) => {
         e.preventDefault();
-        if (!prodName.trim()) return alert("Indica el nombre del postre.");
+        if (!prodName.trim()) return alert("Indica el nombre.");
         if (Number(prodPrice) <= 0) return alert("Indica un precio válido.");
 
-        const newProd = {
+        const newP = {
           id: "prod_" + Date.now(),
           name: prodName.trim(),
           category: prodCategory,
           price: Number(prodPrice),
-          description: prodDesc.trim(),
           image: prodImage,
           available: true
         };
@@ -508,14 +520,13 @@
         try {
           if (db) {
             await db.collection("leross_app").doc("main_data").update({
-              products: [newProd, ...(data.products || [])]
+              products: [newP, ...(data.products || [])]
             });
             setIsAddingProduct(false);
             setProdName("");
             setProdPrice("");
-            setProdDesc("");
             setProdImage("");
-            showToast("Postre añadido al menú");
+            showToast("Postre guardado");
           }
         } catch (err) {
           console.error(err);
@@ -534,61 +545,11 @@
         }
       };
 
-      // =============================================================
-      // 4. FINANZAS
-      // =============================================================
-      const [selectedPeriod, setSelectedPeriod] = useState("all");
+      // Finanzas
       const [expenseDate, setExpenseDate] = useState(new Date().toISOString().split("T")[0]);
       const [expenseCategory, setExpenseCategory] = useState("Ingredientes");
       const [expenseDescription, setExpenseDescription] = useState("");
       const [expenseAmount, setExpenseAmount] = useState("");
-
-      const financialMetrics = useMemo(() => {
-        const now = new Date();
-        const currentYearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-
-        const filteredInvoices = (data.invoices || []).filter(inv => {
-          if (inv.state === "Anulada") return false;
-          if (selectedPeriod === "currentMonth") return (inv.date || "").startsWith(currentYearMonth);
-          return true;
-        });
-
-        const grossRevenue = filteredInvoices
-          .filter(i => i.paymentStatus === "Pagada")
-          .reduce((acc, i) => acc + Number(i.calculation?.total || 0), 0);
-
-        const pendingReceivables = filteredInvoices
-          .filter(i => i.paymentStatus === "Pendiente")
-          .reduce((acc, i) => acc + Number(i.calculation?.total || 0), 0);
-
-        const filteredExpenses = (data.expenses || []).filter(exp => {
-          if (selectedPeriod === "currentMonth") return (exp.date || "").startsWith(currentYearMonth);
-          return true;
-        });
-
-        const totalExpenses = filteredExpenses.reduce((acc, e) => acc + Number(e.amount || 0), 0);
-
-        const expensesByCategory = { Ingredientes: 0, Empaques: 0, Operativo: 0, Herramientas: 0 };
-        filteredExpenses.forEach(e => {
-          const cat = e.category || "Ingredientes";
-          if (expensesByCategory[cat] !== undefined) expensesByCategory[cat] += Number(e.amount || 0);
-          else expensesByCategory["Operativo"] += Number(e.amount || 0);
-        });
-
-        const operatingIncome = grossRevenue - totalExpenses;
-        const operatingMarginPct = grossRevenue > 0 ? Math.round((operatingIncome / grossRevenue) * 100) : 0;
-
-        return {
-          grossRevenue,
-          pendingReceivables,
-          totalExpenses,
-          expensesByCategory,
-          operatingIncome,
-          operatingMarginPct,
-          paidInvoicesCount: filteredInvoices.filter(i => i.paymentStatus === "Pagada").length,
-          expensesCount: filteredExpenses.length
-        };
-      }, [data.invoices, data.expenses, selectedPeriod]);
 
       const handleAddExpense = async (e) => {
         e.preventDefault();
@@ -633,28 +594,32 @@
         }
       };
 
-      // =============================================================
-      // 5. SIMULADOR DE COSTOS
-      // =============================================================
-      const [simMode, setSimMode] = useState("batch");
+      const financialSummary = useMemo(() => {
+        const grossPaid = (data.invoices || [])
+          .filter(i => i.state !== "Anulada" && i.paymentStatus === "Pagada")
+          .reduce((acc, i) => acc + Number(i.calculation?.total || i.total || 0), 0);
 
-      // MODO TANDA (SALES VALUE ALLOCATION)
-      const [batchTitle, setBatchTitle] = useState("Tanda Bizcocho Vainilla");
+        const totalExpenses = (data.expenses || []).reduce((acc, e) => acc + Number(e.amount || 0), 0);
+        const operatingIncome = grossPaid - totalExpenses;
+        const marginPct = grossPaid > 0 ? Math.round((operatingIncome / grossPaid) * 100) : 0;
+
+        return { grossPaid, totalExpenses, operatingIncome, marginPct };
+      }, [data.invoices, data.expenses]);
+
+      // Simulador de Costos
+      const [simMode, setSimMode] = useState("batch");
       const [bowlCost, setBowlCost] = useState("1054");
       const [batchItems, setBatchItems] = useState([
         { id: 1, name: "Bizcocho 1 lb", quantity: 1, sellingPrice: 2700, packagingCost: 180 },
         { id: 2, name: "Bizcocho Personal", quantity: 2, sellingPrice: 350, packagingCost: 40 }
       ]);
 
-      const updateBatchItem = (id, field, val) => {
-        setBatchItems(prev => prev.map(item => item.id === id ? { ...item, [field]: val } : item));
+      const updateBatchItem = (id, f, val) => {
+        setBatchItems(prev => prev.map(it => it.id === id ? { ...it, [f]: val } : it));
       };
 
       const addBatchItem = () => {
-        setBatchItems(prev => [
-          ...prev,
-          { id: Date.now(), name: "Nuevo Tamaño", quantity: 1, sellingPrice: 500, packagingCost: 50 }
-        ]);
+        setBatchItems(prev => [...prev, { id: Date.now(), name: "Nuevo Tamaño", quantity: 1, sellingPrice: 500, packagingCost: 50 }]);
       };
 
       const removeBatchItem = (id) => {
@@ -663,169 +628,57 @@
       };
 
       const batchMetrics = useMemo(() => {
-        const totalBowlRaw = Number(bowlCost || 0);
-        let totalBatchRevenue = 0;
-        let totalPackagingCost = 0;
+        const rawCost = Number(bowlCost || 0);
+        let rev = 0;
+        let pkg = 0;
 
-        batchItems.forEach(item => {
-          const qty = Number(item.quantity || 1);
-          const price = Number(item.sellingPrice || 0);
-          const pkg = Number(item.packagingCost || 0);
-          totalBatchRevenue += qty * price;
-          totalPackagingCost += qty * pkg;
+        batchItems.forEach(it => {
+          rev += Number(it.quantity || 1) * Number(it.sellingPrice || 0);
+          pkg += Number(it.quantity || 1) * Number(it.packagingCost || 0);
         });
 
-        const itemsWithAllocation = batchItems.map(item => {
-          const qty = Number(item.quantity || 1);
-          const unitPrice = Number(item.sellingPrice || 0);
-          const groupRevenue = qty * unitPrice;
-          const unitPkg = Number(item.packagingCost || 0);
+        const itemsAllocated = batchItems.map(it => {
+          const q = Number(it.quantity || 1);
+          const p = Number(it.sellingPrice || 0);
+          const groupRev = q * p;
+          const share = rev > 0 ? (groupRev / rev) : 0;
+          const batterCostUnit = q > 0 ? ((rawCost * share) / q) : 0;
+          const totalCostUnit = batterCostUnit + Number(it.packagingCost || 0);
+          const profit = p - totalCostUnit;
+          const margin = p > 0 ? Math.round((profit / p) * 100) : 0;
 
-          const revenueShareRatio = totalBatchRevenue > 0 ? (groupRevenue / totalBatchRevenue) : 0;
-          const revenueSharePct = Math.round(revenueShareRatio * 100);
-
-          const groupBatterCost = totalBowlRaw * revenueShareRatio;
-          const unitBatterCost = qty > 0 ? (groupBatterCost / qty) : 0;
-          const unitTotalCost = unitBatterCost + unitPkg;
-
-          const unitProfit = unitPrice - unitTotalCost;
-          const unitMarginPct = unitPrice > 0 ? Math.round((unitProfit / unitPrice) * 100) : 0;
-
-          return {
-            ...item,
-            groupRevenue,
-            revenueSharePct,
-            unitBatterCost,
-            unitTotalCost,
-            unitProfit,
-            unitMarginPct
-          };
+          return { ...it, batterCostUnit, totalCostUnit, profit, margin };
         });
 
-        const totalBatchCost = totalBowlRaw + totalPackagingCost;
-        const totalBatchProfit = totalBatchRevenue - totalBatchCost;
-        const totalBatchMarginPct = totalBatchRevenue > 0 ? Math.round((totalBatchProfit / totalBatchRevenue) * 100) : 0;
+        const totalCost = rawCost + pkg;
+        const totalProfit = rev - totalCost;
+        const totalMargin = rev > 0 ? Math.round((totalProfit / rev) * 100) : 0;
 
-        return {
-          totalBatchRevenue,
-          totalBatchCost,
-          totalBatchProfit,
-          totalBatchMarginPct,
-          itemsWithAllocation
-        };
+        return { rev, totalCost, totalProfit, totalMargin, itemsAllocated };
       }, [bowlCost, batchItems]);
 
-      const handleSaveBatchSimulation = async () => {
-        if (!batchTitle.trim()) return alert("Indica un nombre para la tanda.");
-        if (Number(bowlCost) <= 0) return alert("Indica el costo del tazón.");
-
-        const record = {
-          id: "sim_batch_" + Date.now(),
-          type: "batch",
-          title: batchTitle.trim(),
-          date: new Date().toISOString().split("T")[0],
-          bowlCost: Number(bowlCost),
-          items: batchMetrics.itemsWithAllocation,
-          totalBatchCost: batchMetrics.totalBatchCost,
-          totalBatchRevenue: batchMetrics.totalBatchRevenue,
-          totalBatchProfit: batchMetrics.totalBatchProfit,
-          totalMarginPct: batchMetrics.totalBatchMarginPct
-        };
-
-        try {
-          if (db) {
-            await db.collection("leross_app").doc("main_data").update({
-              simulations: [record, ...(data.simulations || [])]
-            });
-            showToast("Tanda guardada en el recetario");
-          }
-        } catch (err) {
-          console.error(err);
-        }
-      };
-
-      // MODO INDIVIDUAL
+      // Simulador Individual
       const [singleName, setSingleName] = useState("");
       const [singleIngredients, setSingleIngredients] = useState("");
       const [singlePackaging, setSinglePackaging] = useState("");
       const [singleLaborGas, setSingleLaborGas] = useState("50");
       const [singleMargin, setSingleMargin] = useState(65);
-      const [singleActualPrice, setSingleActualPrice] = useState("");
 
       const singleResults = useMemo(() => {
         const ing = Number(singleIngredients || 0);
         const pkg = Number(singlePackaging || 0);
-        const cns = Number(singleLaborGas || 0);
-        const totalCost = ing + pkg + cns;
-
+        const lbr = Number(singleLaborGas || 0);
+        const totalCost = ing + pkg + lbr;
         if (totalCost <= 0) return null;
 
-        const marginRatio = singleMargin / 100;
-        const suggestedPrice = marginRatio < 1 ? Math.round(totalCost / (1 - marginRatio)) : 0;
-        const profit = suggestedPrice - totalCost;
-        const markup = totalCost > 0 ? Math.round((profit / totalCost) * 100) : 0;
-
-        const actualP = Number(singleActualPrice || 0);
-        const actualProfit = actualP > 0 ? (actualP - totalCost) : 0;
-        const actualMarginPct = actualP > 0 ? Math.round(((actualP - totalCost) / actualP) * 100) : 0;
-
-        return {
-          totalCost,
-          suggestedPrice,
-          profit,
-          markup,
-          actualProfit,
-          actualMarginPct
-        };
-      }, [singleIngredients, singlePackaging, singleLaborGas, singleMargin, singleActualPrice]);
-
-      const handleSaveSingleSimulation = async () => {
-        if (!singleName.trim()) return alert("Indica el nombre del postre.");
-        if (!singleResults || singleResults.totalCost <= 0) return alert("Indica el costo de ingredientes.");
-
-        const record = {
-          id: "sim_single_" + Date.now(),
-          type: "single",
-          title: singleName.trim(),
-          date: new Date().toISOString().split("T")[0],
-          ingredients: Number(singleIngredients || 0),
-          packaging: Number(singlePackaging || 0),
-          laborGas: Number(singleLaborGas || 0),
-          totalCost: singleResults.totalCost,
-          targetMargin: singleMargin,
-          suggestedPrice: singleResults.suggestedPrice,
-          profit: singleResults.profit,
-          actualPrice: Number(singleActualPrice || 0)
-        };
-
-        try {
-          if (db) {
-            await db.collection("leross_app").doc("main_data").update({
-              simulations: [record, ...(data.simulations || [])]
-            });
-            showToast(`Receta guardada: ${record.title}`);
-          }
-        } catch (err) {
-          console.error(err);
-        }
-      };
-
-      const handleDeleteSimulation = async (id) => {
-        if (!confirm("¿Eliminar este registro guardado?")) return;
-        try {
-          if (db) {
-            await db.collection("leross_app").doc("main_data").update({
-              simulations: (data.simulations || []).filter(s => s.id !== id)
-            });
-            showToast("Registro eliminado");
-          }
-        } catch (err) {
-          console.error(err);
-        }
-      };
+        const ratio = singleMargin / 100;
+        const suggested = ratio < 1 ? Math.round(totalCost / (1 - ratio)) : 0;
+        const profit = suggested - totalCost;
+        return { totalCost, suggested, profit };
+      }, [singleIngredients, singlePackaging, singleLaborGas, singleMargin]);
 
       return (
-        <div className="max-w-2xl mx-auto min-h-screen px-4 pt-6 pb-32">
+        <div className="max-w-md mx-auto min-h-screen px-4 pt-4 pb-28">
           
           {toastMsg && (
             <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-brand-charcoal text-white text-xs px-4 py-2 rounded-full shadow-lg">
@@ -833,361 +686,251 @@
             </div>
           )}
 
-          {/* Encabezado */}
-          <header className="flex items-center justify-between pb-4 border-b border-brand-border">
-            <div>
-              <div className="flex items-center space-x-2">
-                <h1 className="text-xl font-bold tracking-tight text-brand-charcoal">LeRoss Bakery</h1>
-                <span className="text-[10px] bg-brand-softPink text-brand-darkPink font-bold px-2 py-0.5 rounded-full border border-brand-pink/30">
-                  Control Suite
-                </span>
+          {/* ======================================================== */}
+          {/* HEADER: CON TUERCA ⚙️ EN ESQUINA SUPERIOR DERECHA        */}
+          {/* ======================================================== */}
+          <header className="flex items-center justify-between pb-3">
+            <div className="flex items-center space-x-2.5">
+              <div className="w-10 h-10 rounded-2xl bg-[#FDECEF] border border-[#F8D5DE] flex items-center justify-center text-xl shadow-2xs">
+                🧁
               </div>
-              <p className="text-xs text-gray-500 mt-0.5">Gestión Integral de Operaciones</p>
+              <div>
+                <h1 className="text-base font-extrabold text-gray-900 leading-tight">LeRoss Bakery</h1>
+                <div className="flex items-center space-x-1.5 mt-0.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                  <span className="text-[11px] font-medium text-gray-500">Nube Activa</span>
+                </div>
+              </div>
             </div>
 
-            <div className="flex items-center space-x-1.5">
-              <span className={`w-2 h-2 rounded-full ${cloudStatus === 'synced' ? 'bg-emerald-500' : 'bg-amber-400 animate-pulse'}`}></span>
-              <span className="text-[11px] font-semibold text-gray-400">
-                {cloudStatus === 'synced' ? 'Conectado' : 'Sincronizando'}
-              </span>
+            <div className="flex items-center space-x-2">
+              <button
+                onClick={handleCopyBank}
+                className="bg-[#FFF5F7] hover:bg-[#FEECEF] border border-[#F3D7DF] text-gray-700 text-xs font-semibold px-3 py-1.5 rounded-full flex items-center space-x-1.5 active:scale-95 transition-all shadow-2xs"
+              >
+                <span>💳</span>
+                <span>Copiar Banco</span>
+              </button>
+
+              {/* Tuerca de Ajustes en la esquina superior derecha sin palabra */}
+              <button
+                onClick={() => setIsAjustesOpen(true)}
+                className="w-8 h-8 rounded-full bg-white hover:bg-gray-50 border border-gray-200/90 text-gray-600 flex items-center justify-center text-sm active:scale-95 transition-all shadow-2xs"
+                title="Configuración"
+              >
+                ⚙️
+              </button>
             </div>
           </header>
 
           {/* ======================================================== */}
-          {/* TAB 1: PEDIDOS WEB                                       */}
-          {/* ======================================================== */}
-          {tab === "webOrders" && (
-            <div className="space-y-4 pt-4 animate-in fade-in duration-150">
-              <div className="flex justify-between items-center">
-                <div>
-                  <h2 className="text-sm font-bold text-brand-charcoal">Órdenes Solicitadas desde el Menú</h2>
-                  <span className="text-[11px] text-gray-400">Próxima Factura oficial a emitir: <b>{nextDefiniteInvoiceId}</b></span>
-                </div>
-                <span className="text-xs text-brand-darkPink font-bold bg-brand-softPink px-2.5 py-1 rounded-full border border-brand-pink/30">
-                  {pendingWebOrders.length} pendientes
-                </span>
-              </div>
-
-              {pendingWebOrders.map(order => (
-                <div key={order.id} className="bg-white p-5 rounded-3xl border border-brand-border shadow-xs space-y-3.5">
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <div className="flex items-center space-x-2">
-                        <span className="font-extrabold text-sm text-brand-charcoal">{order.customerName}</span>
-                        <span className="text-[10px] bg-amber-100 text-amber-800 font-bold px-2 py-0.5 rounded-full border border-amber-200">
-                          {order.id} · Temporal
-                        </span>
-                      </div>
-                      <a href={`https://wa.me/1${(order.customerPhone || '').replace(/\D/g, '')}`} target="_blank" className="text-xs text-emerald-600 font-semibold block mt-0.5 hover:underline">
-                        📱 {order.customerPhone} (Chat WhatsApp)
-                      </a>
-                    </div>
-                    <div className="text-right">
-                      <span className="font-black text-brand-darkPink text-base block">{formatRD(order.subtotal)}</span>
-                      <span className="text-[10px] text-gray-400 font-medium">{order.deliveryType}</span>
-                    </div>
-                  </div>
-
-                  <div className="p-3 bg-brand-softBg rounded-2xl border border-brand-border space-y-1 text-xs">
-                    <div className="text-gray-600 font-medium">
-                      📅 <b>Fecha solicitada:</b> {formatDate(order.deliveryDate)} {order.deliveryTime && `(${order.deliveryTime})`}
-                    </div>
-                    {order.deliveryAddress && (
-                      <div className="text-gray-600">📍 <b>Entrega en:</b> {order.deliveryAddress}</div>
-                    )}
-                    {order.specialNotes && (
-                      <div className="text-brand-darkPink font-medium">📝 <b>Nota:</b> {order.specialNotes}</div>
-                    )}
-                  </div>
-
-                  <div className="space-y-1 text-xs text-gray-700 py-1">
-                    {(order.items || []).map((it, i) => (
-                      <div key={i} className="flex justify-between">
-                        <span>• {it.quantity}x {it.name}</span>
-                        <span className="font-semibold">{formatRD(it.total)}</span>
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* ACCIONES: CONFIRMAR CON FACTURA OFICIAL O RECHAZAR */}
-                  <div className="flex space-x-2 pt-2 border-t border-brand-border/60">
-                    <button
-                      type="button"
-                      onClick={() => handleConfirmWebOrder(order)}
-                      className="flex-1 bg-brand-charcoal hover:bg-black text-white text-xs font-bold py-2.5 rounded-xl shadow-xs transition-all flex items-center justify-center space-x-1.5"
-                    >
-                      <span>✓ Confirmar (Asignar {nextDefiniteInvoiceId})</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleRejectWebOrder(order.id)}
-                      className="bg-white hover:bg-rose-50 text-rose-500 border border-brand-border text-xs font-bold px-3 py-2.5 rounded-xl transition-all"
-                    >
-                      Rechazar
-                    </button>
-                  </div>
-                </div>
-              ))}
-
-              {pendingWebOrders.length === 0 && (
-                <div className="bg-white p-12 rounded-3xl border border-brand-border text-center space-y-2">
-                  <span className="text-3xl">☕</span>
-                  <h3 className="text-sm font-bold text-brand-charcoal">No hay órdenes temporales pendientes</h3>
-                  <p className="text-xs text-gray-400">Cuando un cliente arme un pedido en el menú web, entrará aquí con número temporal esperando tu aprobación.</p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* ======================================================== */}
-          {/* TAB 2: FACTURAS                                          */}
+          {/* PESTAÑA: FACTURAS                                        */}
           {/* ======================================================== */}
           {tab === "invoices" && (
-            <div className="space-y-4 pt-4 animate-in fade-in duration-150">
-              <div className="flex justify-between items-center">
-                <div className="flex space-x-1.5">
-                  {["all", "Pagada", "Pendiente"].map(f => (
-                    <button
-                      key={f}
-                      onClick={() => setInvFilter(f)}
-                      className={`px-3 py-1 rounded-xl text-xs font-bold transition-all ${
-                        invFilter === f ? "bg-brand-charcoal text-white" : "bg-white text-gray-500 border border-brand-border"
-                      }`}
-                    >
-                      {f === "all" ? "Todas" : f}
-                    </button>
-                  ))}
+            <div className="space-y-3.5 pt-1 animate-in fade-in duration-150">
+              
+              {/* Tarjetas Superiores (FACTURADO / POR COBRAR) */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-white rounded-2xl p-4 border border-gray-100 shadow-2xs">
+                  <span className="text-[10px] font-bold tracking-wider text-gray-400 uppercase block">FACTURADO</span>
+                  <span className="text-lg font-black text-gray-900 mt-1 block">
+                    {formatRD(topMetrics.totalFacturado)}
+                  </span>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => setIsCreatingInvoice(true)}
-                  className="bg-brand-pink hover:bg-brand-darkPink text-white text-xs font-bold px-3.5 py-1.5 rounded-xl shadow-xs transition-all"
+                <div className="bg-[#FFF9FA] rounded-2xl p-4 border border-[#F9E2E8] shadow-2xs">
+                  <span className="text-[10px] font-bold tracking-wider text-[#D46B84] uppercase block">POR COBRAR</span>
+                  <span className="text-lg font-black text-[#D46B84] mt-1 block">
+                    {formatRD(topMetrics.totalPorCobrar)}
+                  </span>
+                </div>
+              </div>
+
+              {/* Pedidos Web Entrantes */}
+              {pendingWebOrders.length > 0 && (
+                <div className="space-y-2 pt-1">
+                  <div className="flex items-center space-x-1.5 px-0.5">
+                    <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-gray-700">
+                      PEDIDOS WEB ENTRANTES ({pendingWebOrders.length})
+                    </span>
+                  </div>
+
+                  {pendingWebOrders.map(order => (
+                    <div key={order.id} className="bg-[#FFFEF9] border border-[#FCEEC7] rounded-2xl p-4 space-y-2.5 shadow-2xs">
+                      <div className="flex justify-between items-start">
+                        <div className="flex items-center space-x-2">
+                          <span className="font-extrabold text-sm text-gray-900">{order.customerName}</span>
+                          <span className="text-[10.5px] font-medium text-gray-500 bg-white border border-gray-200 px-2 py-0.5 rounded-md">
+                            {order.id}
+                          </span>
+                        </div>
+                        <span className="font-extrabold text-sm text-gray-900">{formatRD(order.subtotal)}</span>
+                      </div>
+
+                      {order.deliveryDate && (
+                        <div className="text-xs font-semibold text-[#D46B84]">
+                          Entrega: {order.deliveryDate}
+                        </div>
+                      )}
+
+                      <div className="text-xs text-gray-600 space-y-0.5">
+                        {(order.items || []).map((it, i) => (
+                          <div key={i} className="flex justify-between">
+                            <span>{it.quantity}x {it.name}</span>
+                            <span className="font-medium text-gray-800">{formatRD(it.total || (it.price * it.quantity))}</span>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="flex space-x-2 pt-1">
+                        <button
+                          onClick={() => handleAcceptWebOrder(order)}
+                          className="flex-1 bg-[#488A62] hover:bg-[#3D7754] text-white text-xs font-bold py-2.5 rounded-xl shadow-xs transition-all active:scale-98"
+                        >
+                          ✓ Aceptar (100% Pago)
+                        </button>
+                        <button
+                          onClick={() => handleRejectWebOrder(order.id)}
+                          className="bg-white border border-gray-200 text-rose-500 hover:bg-rose-50 text-xs font-bold px-3.5 py-2.5 rounded-xl transition-all"
+                        >
+                          ✕ Rechazar
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* BARRA: BÚSQUEDA + DROPDOWN DE ESTADO + BOTÓN + INTEGRADO */}
+              <div className="flex space-x-2 pt-1">
+                <input
+                  type="text"
+                  placeholder="Buscar cliente o número..."
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  className="flex-1 bg-white border border-gray-200/90 rounded-xl px-3.5 py-2 text-xs text-gray-800 placeholder-gray-400 outline-none focus:border-[#E5839B] shadow-2xs"
+                />
+
+                {/* Dropdown limpio de estado */}
+                <select
+                  value={statusFilter}
+                  onChange={e => setStatusFilter(e.target.value)}
+                  className="bg-white border border-gray-200/90 rounded-xl px-2.5 py-2 text-xs font-semibold text-gray-700 outline-none shadow-2xs"
                 >
-                  + Nueva Factura ({nextDefiniteInvoiceId})
+                  <option value="Pendientes">Pendientes ↕</option>
+                  <option value="Todas">Todas ↕</option>
+                  <option value="Pagadas">Pagadas ↕</option>
+                  <option value="Anuladas">Anuladas ↕</option>
+                </select>
+
+                {/* Signo + dentro de Facturas para crear nueva manual */}
+                <button
+                  onClick={() => setIsCreatingInvoice(true)}
+                  className="w-9 h-9 bg-brand-charcoal hover:bg-black text-white rounded-xl flex items-center justify-center font-bold text-lg shadow-2xs active:scale-95 transition-all flex-shrink-0"
+                  title="Nueva Factura"
+                >
+                  +
                 </button>
               </div>
 
-              {/* Formulario Crear Factura Manual */}
-              {isCreatingInvoice && (
-                <form onSubmit={handleSaveManualInvoice} className="bg-white p-5 rounded-3xl border border-brand-pink/50 space-y-3.5 shadow-md">
-                  <div className="flex justify-between items-center border-b border-brand-border pb-2">
-                    <div>
-                      <h3 className="text-sm font-bold text-brand-charcoal">Emitir Factura Manual</h3>
-                      <span className="text-[10px] text-brand-darkPink font-bold">Número asignado: {nextDefiniteInvoiceId}</span>
-                    </div>
-                    <button type="button" onClick={() => setIsCreatingInvoice(false)} className="text-gray-400 hover:text-brand-charcoal">✕</button>
-                  </div>
+              {/* LISTA DE FACTURAS (EXACTA IMAGEN 2) */}
+              <div className="space-y-2.5">
+                {filteredInvoices.map(inv => {
+                  const displayId = getInvoiceDisplayNumber(inv);
+                  const customerName = inv.customer?.name || inv.customerName || inv.clientName || "Cliente";
+                  const amount = inv.calculation?.total || inv.total || 0;
+                  const date = inv.date || inv.deliveryDate || "";
 
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="text-[10.5px] font-semibold text-gray-400 block mb-1">Cliente *</label>
-                      <input
-                        type="text"
-                        required
-                        list="customer-suggestions"
-                        placeholder="Nombre completo"
-                        value={invCustomerName}
-                        onChange={e => handleSelectExistingCustomer(e.target.value)}
-                        className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs font-bold outline-none focus:border-brand-pink"
-                      />
-                      <datalist id="customer-suggestions">
-                        {(data.customers || []).map((c, i) => (
-                          <option key={i} value={c.name}>{c.phone ? `(${c.phone})` : ""}</option>
-                        ))}
-                      </datalist>
-                    </div>
-                    <div>
-                      <label className="text-[10.5px] font-semibold text-gray-400 block mb-1">WhatsApp / Teléfono</label>
-                      <input
-                        type="tel"
-                        placeholder="809-000-0000"
-                        value={invCustomerPhone}
-                        onChange={e => setInvCustomerPhone(e.target.value)}
-                        className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs outline-none focus:border-brand-pink"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="text-[10.5px] font-semibold text-gray-400 block mb-1">Fecha de Entrega</label>
-                      <input
-                        type="date"
-                        value={invDeliveryDate}
-                        onChange={e => setInvDeliveryDate(e.target.value)}
-                        className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs outline-none focus:border-brand-pink"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10.5px] font-semibold text-gray-400 block mb-1">Estado de Pago</label>
-                      <select
-                        value={invPaymentStatus}
-                        onChange={e => setInvPaymentStatus(e.target.value)}
-                        className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs font-bold outline-none"
-                      >
-                        <option value="Pagada">✓ Pagada</option>
-                        <option value="Pendiente">⏳ Pendiente</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  {/* Líneas de Producto con Selector del Catálogo */}
-                  <div className="space-y-2 pt-2 border-t border-brand-border">
-                    <div className="flex justify-between items-center">
-                      <span className="text-xs font-bold text-brand-charcoal">Postres / Servicios</span>
-                      <button type="button" onClick={addInvoiceLine} className="text-[11px] font-bold text-brand-darkPink">+ Añadir Postre</button>
-                    </div>
-
-                    <datalist id="products-catalog">
-                      {(data.products || []).map((p, i) => (
-                        <option key={i} value={p.name}>{formatRD(p.price)}</option>
-                      ))}
-                    </datalist>
-
-                    {invItems.map((line, idx) => (
-                      <div key={line.id} className="grid grid-cols-6 gap-1.5 items-center">
-                        <input
-                          type="text"
-                          list="products-catalog"
-                          placeholder="Postre (escribe o elige)"
-                          value={line.name}
-                          onChange={e => updateInvoiceLine(line.id, 'name', e.target.value)}
-                          className="col-span-3 bg-brand-softBg border border-brand-border rounded-xl px-2.5 py-1.5 text-xs outline-none"
-                        />
-                        <input
-                          type="number"
-                          placeholder="Cant."
-                          value={line.quantity}
-                          onChange={e => updateInvoiceLine(line.id, 'quantity', e.target.value)}
-                          className="col-span-1 bg-brand-softBg border border-brand-border rounded-xl px-2 py-1.5 text-xs text-center outline-none"
-                        />
-                        <input
-                          type="number"
-                          placeholder="Precio"
-                          value={line.price}
-                          onChange={e => updateInvoiceLine(line.id, 'price', e.target.value)}
-                          className="col-span-2 bg-brand-softBg border border-brand-border rounded-xl px-2 py-1.5 text-xs text-right font-bold outline-none"
-                        />
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="flex justify-between items-center pt-2">
-                    <div className="w-1/2 pr-2">
-                      <label className="text-[10px] text-gray-400 block">Costo de Envío (RD$)</label>
-                      <input
-                        type="number"
-                        placeholder="0"
-                        value={invShippingFee}
-                        onChange={e => setInvShippingFee(e.target.value)}
-                        className="w-full bg-brand-softBg border border-brand-border rounded-xl px-2.5 py-1 text-xs outline-none"
-                      />
-                    </div>
-                    <div className="text-right">
-                      <span className="text-[10px] text-gray-400 block uppercase">Total a Cobrar</span>
-                      <span className="text-lg font-black text-brand-darkPink">
-                        {formatRD(invItems.reduce((acc, it) => acc + (it.price * it.quantity), 0) + Number(invShippingFee || 0))}
-                      </span>
-                    </div>
-                  </div>
-
-                  <button
-                    type="submit"
-                    className="w-full bg-brand-charcoal text-white text-xs font-bold py-3 rounded-2xl shadow-sm"
-                  >
-                    Emitir Factura {nextDefiniteInvoiceId}
-                  </button>
-                </form>
-              )}
-
-              {/* Listado de Facturas */}
-              <div className="space-y-3">
-                {(data.invoices || []).filter(i => invFilter === "all" || i.paymentStatus === invFilter).map(inv => (
-                  <div key={inv.id} className="bg-white p-4 rounded-3xl border border-brand-border flex justify-between items-center shadow-2xs">
-                    <div>
-                      <div className="flex items-center space-x-2">
-                        <span className="font-extrabold text-sm text-brand-charcoal">{inv.customer?.name}</span>
-                        <span className="text-[10px] font-black text-brand-darkPink bg-brand-softPink px-1.5 py-0.5 rounded border border-brand-pink/30">
-                          {inv.id}
+                  return (
+                    <div 
+                      key={inv.id}
+                      onClick={() => setViewingInvoice(inv)}
+                      className="bg-white rounded-2xl p-4 border border-gray-100/90 shadow-2xs space-y-1.5 cursor-pointer hover:border-[#E5839B]/50 transition-all active:scale-[0.99]"
+                    >
+                      {/* Línea 1: FAC-XXXX a la izquierda | PENDIENTE a la derecha */}
+                      <div className="flex justify-between items-center">
+                        <span className="font-extrabold text-sm text-gray-900 tracking-tight">
+                          {displayId}
                         </span>
-                        {inv.sourceOrderId && (
-                          <span className="text-[9px] bg-gray-100 text-gray-500 font-semibold px-1.5 py-0.5 rounded">
-                            De: {inv.sourceOrderId}
-                          </span>
-                        )}
-                        {inv.state === "Anulada" && (
-                          <span className="text-[9px] bg-rose-100 text-rose-600 font-bold px-1.5 py-0.5 rounded">Anulada</span>
-                        )}
-                      </div>
-                      <span className="text-xs text-gray-400 block mt-0.5">{formatDate(inv.date)} · {inv.items?.length || 0} ítems</span>
-                    </div>
-
-                    <div className="flex items-center space-x-3">
-                      <div className="text-right">
-                        <span className="font-black text-brand-charcoal text-sm block">{formatRD(inv.calculation?.total)}</span>
-                        <button
-                          type="button"
-                          onClick={() => handleTogglePaymentStatus(inv.id, inv.paymentStatus)}
-                          className={`text-[10px] font-bold px-2 py-0.5 rounded-full transition-all ${
-                            inv.paymentStatus === "Pagada" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"
-                          }`}
-                        >
-                          {inv.paymentStatus}
-                        </button>
+                        <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-md uppercase tracking-wider ${
+                          inv.state === 'Anulada'
+                            ? 'bg-rose-50 text-rose-600 border border-rose-200/60'
+                            : inv.paymentStatus === 'Pagada'
+                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/60'
+                            : 'bg-amber-50 text-amber-700 border border-amber-200/60'
+                        }`}>
+                          {inv.state === 'Anulada' ? 'ANULADA' : (inv.paymentStatus || 'PENDIENTE').toUpperCase()}
+                        </span>
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={() => setViewingInvoice(inv)}
-                        className="bg-brand-softBg hover:bg-brand-softPink text-brand-darkPink p-2 rounded-xl text-xs font-bold"
-                        title="Ver Recibo"
-                      >
-                        📄
-                      </button>
+                      {/* Línea 2: Nombre del cliente en negro | Monto en fucsia/rosa a la derecha */}
+                      <div className="flex justify-between items-baseline">
+                        <span className="font-bold text-sm text-gray-800">
+                          {customerName}
+                        </span>
+                        <span className="font-black text-sm text-[#C25E76]">
+                          {formatRD(amount)}
+                        </span>
+                      </div>
+
+                      {/* Línea 3: Fecha en gris suave */}
+                      <div className="text-xs text-gray-400 font-medium">
+                        {formatDate(date)}
+                      </div>
                     </div>
+                  );
+                })}
+
+                {filteredInvoices.length === 0 && (
+                  <div className="text-center py-12 text-xs text-gray-400">
+                    No se encontraron facturas con este filtro.
                   </div>
-                ))}
+                )}
               </div>
 
-              {/* Modal Ver Recibo / Imprimir / WhatsApp */}
+              {/* MODAL DETALLE DE FACTURA (CON DROPDOWN DE ESTADO) */}
               {viewingInvoice && (
                 <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
                   <div className="bg-white w-full max-w-sm rounded-3xl p-6 space-y-4 shadow-2xl" id="printable-receipt">
-                    <div className="text-center border-b border-brand-border pb-3">
-                      <h2 className="text-base font-black text-brand-charcoal">LeRoss Bakery</h2>
+                    <div className="text-center border-b border-gray-100 pb-3">
+                      <h2 className="text-base font-black text-gray-900">LeRoss Bakery</h2>
                       <span className="text-[11px] text-gray-400">Repostería Artesanal · Santo Domingo Este</span>
-                      <div className="text-xs font-bold text-brand-darkPink mt-1">Factura Oficial {viewingInvoice.id}</div>
-                      {viewingInvoice.sourceOrderId && (
-                        <div className="text-[10px] text-gray-400">Referencia: {viewingInvoice.sourceOrderId}</div>
-                      )}
+                      <div className="text-xs font-bold text-[#D46B84] mt-1">{getInvoiceDisplayNumber(viewingInvoice)}</div>
                     </div>
 
-                    <div className="text-xs space-y-1 text-gray-600">
-                      <div><b>Cliente:</b> {viewingInvoice.customer?.name}</div>
+                    <div className="text-xs space-y-1.5 text-gray-600">
+                      <div><b>Cliente:</b> {viewingInvoice.customer?.name || viewingInvoice.customerName}</div>
                       <div><b>Teléfono:</b> {viewingInvoice.customer?.phone || "—"}</div>
-                      <div><b>Fecha Entrega:</b> {formatDate(viewingInvoice.deliveryDate) || "—"}</div>
-                      <div><b>Estado:</b> <span className={viewingInvoice.paymentStatus === 'Pagada' ? 'text-emerald-600 font-bold' : 'text-amber-600 font-bold'}>{viewingInvoice.paymentStatus}</span></div>
+                      <div><b>Fecha:</b> {formatDate(viewingInvoice.date)}</div>
                     </div>
 
-                    <div className="border-y border-brand-border/60 py-2 space-y-1.5 text-xs">
+                    {/* Selector desplegable de estado adentro del recibo */}
+                    <div className="flex items-center justify-between bg-gray-50 p-2.5 rounded-xl border border-gray-100">
+                      <span className="text-xs font-semibold text-gray-500">Estado de Factura:</span>
+                      <select
+                        value={viewingInvoice.state === 'Anulada' ? 'Anulada' : (viewingInvoice.paymentStatus || 'Pendiente')}
+                        onChange={(e) => handleUpdateInvoiceStatus(viewingInvoice.id, e.target.value)}
+                        className="bg-white border border-gray-200 text-xs font-bold rounded-lg px-2.5 py-1 outline-none text-gray-800"
+                      >
+                        <option value="Pendiente">⏳ Pendiente</option>
+                        <option value="Pagada">✓ Pagada</option>
+                        <option value="Anulada">✕ Anulada</option>
+                      </select>
+                    </div>
+
+                    <div className="border-y border-gray-100 py-2 space-y-1.5 text-xs">
                       {(viewingInvoice.items || []).map((it, i) => (
                         <div key={i} className="flex justify-between">
                           <span>{it.quantity}x {it.name}</span>
                           <span className="font-semibold">{formatRD(it.total)}</span>
                         </div>
                       ))}
-                      {Number(viewingInvoice.shippingFee) > 0 && (
-                        <div className="flex justify-between text-gray-500">
-                          <span>Envío a domicilio</span>
-                          <span>{formatRD(viewingInvoice.shippingFee)}</span>
-                        </div>
-                      )}
                     </div>
 
-                    <div className="flex justify-between items-baseline font-black text-base text-brand-charcoal">
+                    <div className="flex justify-between items-baseline font-black text-base text-gray-900">
                       <span>Total:</span>
-                      <span className="text-brand-darkPink">{formatRD(viewingInvoice.calculation?.total)}</span>
+                      <span className="text-[#C25E76]">{formatRD(viewingInvoice.calculation?.total || viewingInvoice.total)}</span>
                     </div>
 
                     <div className="grid grid-cols-2 gap-2 pt-2">
@@ -1205,19 +948,10 @@
                       </button>
                     </div>
 
-                    <div className="flex justify-between items-center pt-1">
-                      {viewingInvoice.state !== "Anulada" && (
-                        <button
-                          type="button"
-                          onClick={() => handleAnularInvoice(viewingInvoice.id)}
-                          className="text-xs text-rose-500 hover:underline font-semibold"
-                        >
-                          Anular Factura
-                        </button>
-                      )}
+                    <div className="text-center pt-1">
                       <button
                         onClick={() => setViewingInvoice(null)}
-                        className="text-xs text-gray-400 font-semibold ml-auto"
+                        className="text-xs text-gray-400 font-semibold hover:text-gray-600"
                       >
                         Cerrar
                       </button>
@@ -1225,134 +959,249 @@
                   </div>
                 </div>
               )}
+
+              {/* MODAL CREAR NUEVA FACTURA (ACTIVADO POR EL BOTÓN +) */}
+              {isCreatingInvoice && (
+                <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+                  <form onSubmit={handleSaveManualInvoice} className="bg-white w-full max-w-sm rounded-3xl p-5 space-y-3.5 shadow-2xl">
+                    <div className="flex justify-between items-center border-b border-gray-100 pb-2">
+                      <div>
+                        <h3 className="text-sm font-bold text-gray-900">Nueva Factura</h3>
+                        <span className="text-[10px] text-[#D46B84] font-bold">Asignará: {nextInvoiceNumber}</span>
+                      </div>
+                      <button type="button" onClick={() => setIsCreatingInvoice(false)} className="text-gray-400">✕</button>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-[10px] text-gray-400 block mb-1">Cliente *</label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="Nombre"
+                          value={invCustomerName}
+                          onChange={e => setInvCustomerName(e.target.value)}
+                          className="w-full bg-[#FAF7F8] border border-gray-200 rounded-xl px-2.5 py-1.5 text-xs font-bold outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-gray-400 block mb-1">Teléfono</label>
+                        <input
+                          type="tel"
+                          placeholder="WhatsApp"
+                          value={invCustomerPhone}
+                          onChange={e => setInvCustomerPhone(e.target.value)}
+                          className="w-full bg-[#FAF7F8] border border-gray-200 rounded-xl px-2.5 py-1.5 text-xs outline-none"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-[10px] text-gray-400 block mb-1">Fecha Entrega</label>
+                        <input
+                          type="date"
+                          value={invDeliveryDate}
+                          onChange={e => setInvDeliveryDate(e.target.value)}
+                          className="w-full bg-[#FAF7F8] border border-gray-200 rounded-xl px-2.5 py-1.5 text-xs outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-gray-400 block mb-1">Estado</label>
+                        <select
+                          value={invPaymentStatus}
+                          onChange={e => setInvPaymentStatus(e.target.value)}
+                          className="w-full bg-[#FAF7F8] border border-gray-200 rounded-xl px-2 py-1.5 text-xs font-bold outline-none"
+                        >
+                          <option value="Pendiente">Pendiente</option>
+                          <option value="Pagada">Pagada</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2 pt-1 border-t border-gray-100">
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs font-bold text-gray-800">Postres</span>
+                        <button type="button" onClick={addInvoiceLine} className="text-[11px] font-bold text-[#D46B84]">+ Añadir</button>
+                      </div>
+
+                      {invItems.map((line) => (
+                        <div key={line.id} className="grid grid-cols-6 gap-1.5 items-center">
+                          <input
+                            type="text"
+                            placeholder="Postre"
+                            value={line.name}
+                            onChange={e => updateInvoiceLine(line.id, 'name', e.target.value)}
+                            className="col-span-3 bg-[#FAF7F8] border border-gray-200 rounded-xl px-2 py-1 text-xs outline-none"
+                          />
+                          <input
+                            type="number"
+                            placeholder="Cant."
+                            value={line.quantity}
+                            onChange={e => updateInvoiceLine(line.id, 'quantity', e.target.value)}
+                            className="col-span-1 bg-[#FAF7F8] border border-gray-200 rounded-xl px-1 py-1 text-xs text-center outline-none"
+                          />
+                          <input
+                            type="number"
+                            placeholder="RD$"
+                            value={line.price}
+                            onChange={e => updateInvoiceLine(line.id, 'price', e.target.value)}
+                            className="col-span-2 bg-[#FAF7F8] border border-gray-200 rounded-xl px-2 py-1 text-xs text-right font-bold outline-none"
+                          />
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="flex justify-between items-center pt-2">
+                      <span className="text-xs text-gray-400 font-bold uppercase">Total:</span>
+                      <span className="text-base font-black text-[#C25E76]">
+                        {formatRD(invItems.reduce((acc, it) => acc + (it.price * it.quantity), 0))}
+                      </span>
+                    </div>
+
+                    <button
+                      type="submit"
+                      className="w-full bg-brand-charcoal text-white text-xs font-bold py-2.5 rounded-xl shadow-xs"
+                    >
+                      Emitir Factura {nextInvoiceNumber}
+                    </button>
+                  </form>
+                </div>
+              )}
+
             </div>
           )}
 
           {/* ======================================================== */}
-          {/* TAB 3: MENÚ                                              */}
+          {/* PESTAÑA: CLIENTES                                        */}
+          {/* ======================================================== */}
+          {tab === "customers" && (
+            <div className="space-y-3.5 pt-1 animate-in fade-in duration-150">
+              <div className="flex justify-between items-center">
+                <h2 className="text-sm font-bold text-gray-900">Directorio de Clientes</h2>
+                <span className="text-xs text-gray-400">{(data.customers || []).length} clientes</span>
+              </div>
+
+              <div className="space-y-2">
+                {(data.customers || []).map((c, i) => (
+                  <div key={i} className="bg-white rounded-2xl p-3.5 border border-gray-100 flex items-center justify-between shadow-2xs">
+                    <div>
+                      <h4 className="font-bold text-xs text-gray-900">{c.name}</h4>
+                      <span className="text-xs text-gray-400">{c.phone || "Sin teléfono"}</span>
+                    </div>
+                    {c.phone && (
+                      <a
+                        href={`https://wa.me/1${c.phone.replace(/\D/g, '')}`}
+                        target="_blank"
+                        className="bg-emerald-50 text-emerald-700 text-xs font-bold px-3 py-1.5 rounded-xl"
+                      >
+                        WhatsApp
+                      </a>
+                    )}
+                  </div>
+                ))}
+
+                {(data.customers || []).length === 0 && (
+                  <div className="text-center py-12 text-xs text-gray-400">
+                    Aún no hay clientes registrados en el directorio.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ======================================================== */}
+          {/* PESTAÑA: MENÚ                                            */}
           {/* ======================================================== */}
           {tab === "menu" && (
-            <div className="space-y-4 pt-4 animate-in fade-in duration-150">
+            <div className="space-y-3.5 pt-1 animate-in fade-in duration-150">
               <div className="flex justify-between items-center">
                 <div>
-                  <h2 className="text-sm font-bold text-brand-charcoal">Catálogo de Postres</h2>
-                  <span className="text-xs text-gray-400 font-medium">Visible para los clientes en el menú web</span>
+                  <h2 className="text-sm font-bold text-gray-900">Catálogo de Postres</h2>
+                  <span className="text-xs text-gray-400">{(data.products || []).length} postres</span>
                 </div>
                 <button
-                  type="button"
                   onClick={() => setIsAddingProduct(true)}
-                  className="bg-brand-pink hover:bg-brand-darkPink text-white text-xs font-bold px-3.5 py-1.5 rounded-xl shadow-xs transition-all"
+                  className="bg-brand-pink hover:bg-brand-darkPink text-white text-xs font-bold px-3 py-1.5 rounded-xl shadow-xs"
                 >
                   + Nuevo Postre
                 </button>
               </div>
 
               {isAddingProduct && (
-                <form onSubmit={handleSaveProduct} className="bg-white p-5 rounded-3xl border border-brand-pink/50 space-y-3.5 shadow-md">
-                  <div className="flex justify-between items-center border-b border-brand-border pb-2">
-                    <h3 className="text-sm font-bold text-brand-charcoal">Añadir Postre al Menú</h3>
+                <form onSubmit={handleSaveProduct} className="bg-white p-5 rounded-3xl border border-brand-pink/50 space-y-3 shadow-md">
+                  <div className="flex justify-between items-center border-b pb-2">
+                    <h3 className="text-sm font-bold text-gray-900">Añadir Postre</h3>
                     <button type="button" onClick={() => setIsAddingProduct(false)} className="text-gray-400">✕</button>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="text-[10.5px] font-semibold text-gray-400 block mb-1">Nombre *</label>
-                      <input
-                        type="text"
-                        required
-                        placeholder="Ej. Tres Leches Familiar"
-                        value={prodName}
-                        onChange={e => setProdName(e.target.value)}
-                        className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs font-bold outline-none focus:border-brand-pink"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10.5px] font-semibold text-gray-400 block mb-1">Categoría</label>
-                      <select
-                        value={prodCategory}
-                        onChange={e => setProdCategory(e.target.value)}
-                        className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs font-bold outline-none"
-                      >
-                        <option value="Tres Leches">Tres Leches</option>
-                        <option value="Bizcochos">Bizcochos</option>
-                        <option value="Postres Fríos">Postres Fríos</option>
-                        <option value="Individuales">Individuales</option>
-                      </select>
-                    </div>
-                  </div>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Nombre del postre"
+                    value={prodName}
+                    onChange={e => setProdName(e.target.value)}
+                    className="w-full bg-[#FAF7F8] border border-gray-200 rounded-xl px-3 py-2 text-xs font-bold outline-none"
+                  />
 
-                  <div>
-                    <label className="text-[10.5px] font-semibold text-gray-400 block mb-1">Precio de Venta (RD$)</label>
+                  <div className="grid grid-cols-2 gap-2">
                     <input
                       type="number"
                       required
-                      placeholder="2200"
+                      placeholder="Precio de Venta"
                       value={prodPrice}
                       onChange={e => setProdPrice(e.target.value)}
-                      className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs font-black text-brand-darkPink outline-none focus:border-brand-pink"
+                      className="w-full bg-[#FAF7F8] border border-gray-200 rounded-xl px-3 py-2 text-xs font-black text-[#D46B84] outline-none"
                     />
+                    <select
+                      value={prodCategory}
+                      onChange={e => setProdCategory(e.target.value)}
+                      className="w-full bg-[#FAF7F8] border border-gray-200 rounded-xl px-3 py-2 text-xs font-bold outline-none"
+                    >
+                      <option value="Tres Leches">Tres Leches</option>
+                      <option value="Bizcochos">Bizcochos</option>
+                      <option value="Postres Fríos">Postres Fríos</option>
+                      <option value="Individuales">Individuales</option>
+                    </select>
                   </div>
 
                   <div>
-                    <label className="text-[10.5px] font-semibold text-gray-400 block mb-1">Descripción para el Cliente</label>
-                    <textarea
-                      rows="2"
-                      placeholder="Bizcocho bañado en nuestra receta especial de 3 leches..."
-                      value={prodDesc}
-                      onChange={e => setProdDesc(e.target.value)}
-                      className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs outline-none focus:border-brand-pink"
-                    ></textarea>
-                  </div>
-
-                  <div>
-                    <label className="text-[10.5px] font-semibold text-gray-400 block mb-1">Foto del Postre (Optimización Retina HD 800x800)</label>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={handleImageUpload}
-                      className="text-xs text-gray-500"
-                    />
+                    <label className="text-[10px] text-gray-400 block mb-1">Foto Retina (800x800)</label>
+                    <input type="file" accept="image/*" onChange={handleImageUpload} className="text-xs text-gray-500" />
                     {prodImage && (
-                      <div className="mt-2 w-16 h-16 rounded-xl overflow-hidden border border-brand-border">
-                        <img src={prodImage} alt="Preview" className="w-full h-full object-cover" />
+                      <div className="mt-2 w-12 h-12 rounded-xl overflow-hidden border">
+                        <img src={prodImage} className="w-full h-full object-cover" />
                       </div>
                     )}
                   </div>
 
-                  <button
-                    type="submit"
-                    className="w-full bg-brand-charcoal text-white text-xs font-bold py-3 rounded-2xl shadow-sm"
-                  >
-                    Publicar en el Menú
+                  <button type="submit" className="w-full bg-brand-charcoal text-white text-xs font-bold py-2.5 rounded-xl">
+                    Guardar Postre
                   </button>
                 </form>
               )}
 
-              {/* Grid de Productos */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-2">
                 {(data.products || []).map(p => (
-                  <div key={p.id} className="bg-white p-3.5 rounded-3xl border border-brand-border flex items-center space-x-3 shadow-2xs">
-                    <div className="w-16 h-16 rounded-2xl bg-brand-softBg overflow-hidden flex-shrink-0 border border-brand-border flex items-center justify-center">
-                      {p.image ? (
-                        <img src={p.image} alt={p.name} className="w-full h-full object-cover" />
-                      ) : (
-                        <span className="text-xl opacity-30">🧁</span>
-                      )}
+                  <div key={p.id} className="bg-white p-3 rounded-2xl border border-gray-100 flex items-center justify-between shadow-2xs">
+                    <div className="flex items-center space-x-3">
+                      <div className="w-12 h-12 rounded-xl bg-gray-50 overflow-hidden flex items-center justify-center border border-gray-100">
+                        {p.image ? <img src={p.image} className="w-full h-full object-cover" /> : <span>🧁</span>}
+                      </div>
+                      <div>
+                        <h4 className="font-bold text-xs text-gray-900">{p.name}</h4>
+                        <span className="font-black text-xs text-[#C25E76]">{formatWholeRD(p.price)}</span>
+                      </div>
                     </div>
 
-                    <div className="flex-1 min-w-0">
-                      <h4 className="font-bold text-xs text-brand-charcoal truncate">{p.name}</h4>
-                      <span className="text-[11px] font-black text-brand-darkPink block">{formatWholeRD(p.price)}</span>
-                      <button
-                        type="button"
-                        onClick={() => handleToggleProductAvailability(p.id, p.available)}
-                        className={`text-[9.5px] font-bold px-2 py-0.5 rounded-full mt-1 ${
-                          p.available !== false ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'
-                        }`}
-                      >
-                        {p.available !== false ? "Disponible" : "Agotado"}
-                      </button>
-                    </div>
+                    <button
+                      onClick={() => handleToggleProductAvailability(p.id, p.available)}
+                      className={`text-[10px] font-bold px-2 py-1 rounded-full ${
+                        p.available !== false ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-500'
+                      }`}
+                    >
+                      {p.available !== false ? "Disponible" : "Agotado"}
+                    </button>
                   </div>
                 ))}
               </div>
@@ -1360,142 +1209,88 @@
           )}
 
           {/* ======================================================== */}
-          {/* TAB 4: FINANZAS                                          */}
+          {/* PESTAÑA: FINANZAS                                        */}
           {/* ======================================================== */}
           {tab === "finances" && (
-            <div className="space-y-5 pt-4 animate-in fade-in duration-150">
-              <div className="flex justify-between items-center bg-white p-3 rounded-2xl border border-brand-border">
-                <span className="text-xs font-bold text-gray-500">Período de análisis:</span>
-                <select
-                  value={selectedPeriod}
-                  onChange={e => setSelectedPeriod(e.target.value)}
-                  className="bg-brand-softBg border border-brand-border rounded-xl px-3 py-1.5 text-xs font-semibold text-brand-charcoal outline-none"
-                >
-                  <option value="all">Histórico Acumulado Completo</option>
-                  <option value="currentMonth">Mes Actual</option>
-                </select>
-              </div>
-
-              {/* Tarjeta de Utilidad Operativa */}
-              <div className="bg-gradient-to-br from-brand-charcoal to-[#2D2D2D] p-6 rounded-3xl text-white shadow-lg space-y-4">
+            <div className="space-y-4 pt-1 animate-in fade-in duration-150">
+              <div className="bg-gradient-to-br from-brand-charcoal to-[#2D2D2D] p-5 rounded-3xl text-white shadow-md space-y-3">
                 <div className="flex justify-between items-start">
                   <div>
-                    <span className="text-xs text-white/60 uppercase tracking-widest font-semibold block">Utilidad Operativa Real</span>
-                    <span className="text-3xl font-extrabold tracking-tight mt-1 block">
-                      {formatRD(financialMetrics.operatingIncome)}
-                    </span>
+                    <span className="text-[10px] text-white/60 uppercase tracking-widest font-semibold block">Utilidad Operativa</span>
+                    <span className="text-2xl font-black mt-0.5 block">{formatRD(financialSummary.operatingIncome)}</span>
                   </div>
-                  <div className="bg-white/10 px-3 py-1.5 rounded-full text-right backdrop-blur-xs">
-                    <span className="text-xs font-bold text-emerald-400">
-                      {financialMetrics.operatingMarginPct}% Margen Neto
-                    </span>
+                  <div className="bg-white/10 px-2.5 py-1 rounded-full text-xs font-bold text-emerald-400">
+                    {financialSummary.marginPct}% Margen
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4 pt-3 border-t border-white/10 text-xs">
+                <div className="grid grid-cols-2 gap-2 pt-2 border-t border-white/10 text-xs">
                   <div>
-                    <span className="text-white/60 block">Ingresos Cobrados</span>
-                    <span className="font-bold text-emerald-400 text-sm mt-0.5 block">
-                      +{formatRD(financialMetrics.grossRevenue)}
-                    </span>
-                    <span className="text-[10px] text-white/40 font-medium">({financialMetrics.paidInvoicesCount} facturas pagadas)</span>
+                    <span className="text-white/60 block text-[10.5px]">Cobrado:</span>
+                    <span className="font-bold text-emerald-400 text-sm">+{formatRD(financialSummary.grossPaid)}</span>
                   </div>
                   <div>
-                    <span className="text-white/60 block">Egresos / Gastos</span>
-                    <span className="font-bold text-rose-400 text-sm mt-0.5 block">
-                      -{formatRD(financialMetrics.totalExpenses)}
-                    </span>
-                    <span className="text-[10px] text-white/40 font-medium">({financialMetrics.expensesCount} compras registradas)</span>
+                    <span className="text-white/60 block text-[10.5px]">Gastos:</span>
+                    <span className="font-bold text-rose-400 text-sm">-{formatRD(financialSummary.totalExpenses)}</span>
                   </div>
                 </div>
               </div>
 
-              {financialMetrics.pendingReceivables > 0 && (
-                <div className="p-4 bg-amber-50/80 border border-amber-200/80 rounded-2xl flex justify-between items-center text-xs">
-                  <div>
-                    <span className="font-bold text-amber-900 block">Facturación Pendiente por Cobrar</span>
-                    <span className="text-amber-700 text-[11px]">Dinero en pedidos entregados aún no pagados</span>
-                  </div>
-                  <span className="font-extrabold text-amber-900 text-sm">{formatRD(financialMetrics.pendingReceivables)}</span>
-                </div>
-              )}
-
-              {/* Registro Rápido de Compras/Gastos */}
-              <form onSubmit={handleAddExpense} className="bg-white p-5 rounded-3xl border border-brand-border space-y-3 shadow-xs">
-                <h3 className="text-sm font-bold text-brand-charcoal">Registrar Compra / Gasto</h3>
-                
-                <div className="grid grid-cols-2 gap-2.5">
-                  <div>
-                    <label className="text-[11px] font-semibold text-gray-500 block mb-1">Fecha</label>
-                    <input 
-                      type="date"
-                      value={expenseDate}
-                      onChange={e => setExpenseDate(e.target.value)}
-                      className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs outline-none focus:border-brand-pink"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[11px] font-semibold text-gray-500 block mb-1">Categoría</label>
-                    <select
-                      value={expenseCategory}
-                      onChange={e => setExpenseCategory(e.target.value)}
-                      className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs outline-none font-semibold text-brand-charcoal"
-                    >
-                      <option value="Ingredientes">🛒 Ingredientes</option>
-                      <option value="Empaques">📦 Empaques & Lazos</option>
-                      <option value="Operativo">⚡ Gas / Luz / Servicios</option>
-                      <option value="Herramientas">🛠 Herramientas & Moldes</option>
-                    </select>
-                  </div>
+              {/* Registrar Compra */}
+              <form onSubmit={handleAddExpense} className="bg-white p-4 rounded-2xl border border-gray-100 space-y-2.5 shadow-2xs">
+                <h3 className="text-xs font-bold text-gray-900">Registrar Compra / Gasto</h3>
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    type="date"
+                    value={expenseDate}
+                    onChange={e => setExpenseDate(e.target.value)}
+                    className="w-full bg-[#FAF7F8] border border-gray-200 rounded-xl px-2.5 py-1.5 text-xs outline-none"
+                  />
+                  <select
+                    value={expenseCategory}
+                    onChange={e => setExpenseCategory(e.target.value)}
+                    className="w-full bg-[#FAF7F8] border border-gray-200 rounded-xl px-2.5 py-1.5 text-xs outline-none font-semibold"
+                  >
+                    <option value="Ingredientes">🛒 Ingredientes</option>
+                    <option value="Empaques">📦 Empaques</option>
+                    <option value="Operativo">⚡ Servicios</option>
+                  </select>
                 </div>
 
                 <div className="grid grid-cols-3 gap-2">
-                  <div className="col-span-2">
-                    <label className="text-[11px] font-semibold text-gray-500 block mb-1">Descripción</label>
-                    <input 
-                      type="text"
-                      placeholder="Ej. Supermercado Bravo (leches, harina)"
-                      value={expenseDescription}
-                      onChange={e => setExpenseDescription(e.target.value)}
-                      className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs outline-none focus:border-brand-pink"
-                    />
-                  </div>
-                  <div className="col-span-1">
-                    <label className="text-[11px] font-semibold text-gray-500 block mb-1">Monto (RD$)</label>
-                    <input 
-                      type="number"
-                      placeholder="2500"
-                      value={expenseAmount}
-                      onChange={e => setExpenseAmount(e.target.value)}
-                      className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs outline-none font-bold text-rose-600 focus:border-brand-pink"
-                    />
-                  </div>
+                  <input
+                    type="text"
+                    placeholder="Descripción"
+                    value={expenseDescription}
+                    onChange={e => setExpenseDescription(e.target.value)}
+                    className="col-span-2 bg-[#FAF7F8] border border-gray-200 rounded-xl px-2.5 py-1.5 text-xs outline-none"
+                  />
+                  <input
+                    type="number"
+                    placeholder="RD$"
+                    value={expenseAmount}
+                    onChange={e => setExpenseAmount(e.target.value)}
+                    className="col-span-1 bg-[#FAF7F8] border border-gray-200 rounded-xl px-2.5 py-1.5 text-xs font-bold text-rose-600 outline-none"
+                  />
                 </div>
 
-                <button
-                  type="submit"
-                  className="w-full bg-brand-charcoal text-white text-xs font-bold py-2.5 rounded-xl shadow-xs"
-                >
+                <button type="submit" className="w-full bg-brand-charcoal text-white text-xs font-bold py-2 rounded-xl">
                   + Guardar Gasto
                 </button>
               </form>
 
-              {/* Historial de Compras */}
-              <div className="bg-white p-5 rounded-3xl border border-brand-border space-y-3 shadow-xs">
-                <div className="flex justify-between items-center">
-                  <h3 className="text-sm font-bold text-brand-charcoal">Historial de Compras</h3>
-                  <span className="text-xs text-gray-400">{(data.expenses || []).length} compras</span>
-                </div>
-
-                <div className="divide-y divide-brand-border/60">
+              {/* Compras Recientes */}
+              <div className="bg-white p-4 rounded-2xl border border-gray-100 space-y-2 shadow-2xs">
+                <span className="text-xs font-bold text-gray-900 block">Compras Registradas</span>
+                <div className="divide-y divide-gray-100">
                   {(data.expenses || []).map(exp => (
-                    <div key={exp.id} className="py-2.5 flex justify-between items-center text-xs">
+                    <div key={exp.id} className="py-2 flex justify-between items-center text-xs">
                       <div>
-                        <span className="font-semibold text-brand-charcoal">{exp.description}</span>
+                        <span className="font-semibold text-gray-800">{exp.description}</span>
                         <span className="text-[10px] text-gray-400 block">{formatDate(exp.date)} · {exp.category}</span>
                       </div>
-                      <div className="flex items-center space-x-3">
-                        <span className="font-bold text-rose-600 text-sm">-{formatRD(exp.amount)}</span>
+                      <div className="flex items-center space-x-2">
+                        <span className="font-bold text-rose-600">-{formatRD(exp.amount)}</span>
                         <button onClick={() => handleDeleteExpense(exp.id)} className="text-gray-400 hover:text-rose-500">✕</button>
                       </div>
                     </div>
@@ -1506,360 +1301,243 @@
           )}
 
           {/* ======================================================== */}
-          {/* TAB 5: SIMULADOR DE COSTOS                               */}
+          {/* PESTAÑA: SIMULADOR DE COSTOS                             */}
           {/* ======================================================== */}
           {tab === "simulator" && (
-            <div className="space-y-5 pt-4 animate-in fade-in duration-150">
-              
-              <div className="p-1.5 bg-brand-softPink/50 border border-brand-pink/30 rounded-2xl flex space-x-1.5 shadow-2xs">
+            <div className="space-y-4 pt-1 animate-in fade-in duration-150">
+              <div className="p-1 bg-[#FDECEF] rounded-2xl flex space-x-1">
                 <button
-                  type="button"
                   onClick={() => setSimMode("batch")}
-                  className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all ${
-                    simMode === "batch" ? "bg-brand-pink text-white shadow-xs" : "text-brand-darkPink hover:bg-white/60"
-                  }`}
+                  className={`flex-1 py-1.5 text-xs font-bold rounded-xl ${simMode === 'batch' ? 'bg-brand-pink text-white shadow-xs' : 'text-[#D46B84]'}`}
                 >
-                  🥣 Tanda Compartida (Batch)
+                  🥣 Tanda Compartida
                 </button>
                 <button
-                  type="button"
                   onClick={() => setSimMode("single")}
-                  className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all ${
-                    simMode === "single" ? "bg-brand-pink text-white shadow-xs" : "text-brand-darkPink hover:bg-white/60"
-                  }`}
+                  className={`flex-1 py-1.5 text-xs font-bold rounded-xl ${simMode === 'single' ? 'bg-brand-pink text-white shadow-xs' : 'text-[#D46B84]'}`}
                 >
-                  🍰 Postre Individual (Sin Tanda)
+                  🍰 Postre Individual
                 </button>
               </div>
 
-              {/* MODO TANDA (SALES VALUE ALLOCATION) */}
               {simMode === "batch" && (
-                <div className="space-y-4 animate-in fade-in duration-150">
-                  <div className="bg-white p-5 rounded-3xl border border-brand-border space-y-4 shadow-xs">
-                    <div>
-                      <h3 className="text-sm font-bold text-brand-charcoal">Tanda por Reparto de Valor Económico</h3>
-                      <p className="text-xs text-gray-400 mt-0.5">El sistema divide la masa proporcionalmente según el precio de venta de cada molde.</p>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="text-[11px] font-semibold text-gray-500 block mb-1">Nombre de la Tanda</label>
-                        <input
-                          type="text"
-                          value={batchTitle}
-                          onChange={e => setBatchTitle(e.target.value)}
-                          placeholder="Ej. Tanda Bizcocho Vainilla"
-                          className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs font-bold text-brand-charcoal outline-none focus:border-brand-pink"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[11px] font-semibold text-gray-500 block mb-1">Costo Mezcla en Tazón (RD$)</label>
-                        <input
-                          type="number"
-                          value={bowlCost}
-                          onChange={e => setBowlCost(e.target.value)}
-                          placeholder="1054"
-                          className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs font-black text-brand-darkPink outline-none focus:border-brand-pink"
-                        />
-                      </div>
-                    </div>
+                <div className="space-y-3">
+                  <div className="bg-white p-4 rounded-2xl border border-gray-100 space-y-2 shadow-2xs">
+                    <span className="text-xs font-bold text-gray-900 block">Costo de Materia Prima en Tazón</span>
+                    <input
+                      type="number"
+                      placeholder="1054"
+                      value={bowlCost}
+                      onChange={e => setBowlCost(e.target.value)}
+                      className="w-full bg-[#FAF7F8] border border-gray-200 rounded-xl px-3 py-2 text-xs font-black text-[#D46B84] outline-none"
+                    />
                   </div>
 
-                  {/* Moldes Obtenidos */}
-                  <div className="bg-white p-5 rounded-3xl border border-brand-border space-y-4 shadow-xs">
+                  <div className="bg-white p-4 rounded-2xl border border-gray-100 space-y-2.5 shadow-2xs">
                     <div className="flex justify-between items-center">
-                      <div>
-                        <h3 className="text-sm font-bold text-brand-charcoal">Moldes Horneados</h3>
-                        <p className="text-xs text-gray-400 mt-0.5">Indica cantidad, precio de venta y costo de su empaque individual.</p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={addBatchItem}
-                        className="text-xs font-bold text-brand-darkPink bg-brand-softPink hover:bg-brand-softPink/80 px-3 py-1.5 rounded-xl border border-brand-pink/30 transition-all"
-                      >
-                        + Añadir Tamaño
-                      </button>
+                      <span className="text-xs font-bold text-gray-900">Moldes Horneados</span>
+                      <button onClick={addBatchItem} className="text-[11px] font-bold text-[#D46B84]">+ Añadir Molde</button>
                     </div>
 
-                    <div className="space-y-3">
-                      {batchMetrics.itemsWithAllocation.map((item, idx) => (
-                        <div key={item.id} className="p-4 rounded-2xl bg-brand-softBg border border-brand-border space-y-3">
-                          <div className="flex items-center space-x-2">
-                            <span className="w-5 h-5 rounded-full bg-white text-brand-darkPink font-bold text-xs flex items-center justify-center border border-brand-border">
-                              {idx + 1}
-                            </span>
+                    {batchMetrics.itemsAllocated.map((it) => (
+                      <div key={it.id} className="p-3 rounded-xl bg-[#FAF7F8] border border-gray-200 space-y-2 text-xs">
+                        <div className="flex justify-between items-center">
+                          <input
+                            type="text"
+                            value={it.name}
+                            onChange={e => updateBatchItem(it.id, 'name', e.target.value)}
+                            className="bg-white border rounded-lg px-2 py-1 text-xs font-bold flex-1 mr-2"
+                          />
+                          {batchItems.length > 1 && <button onClick={() => removeBatchItem(it.id)} className="text-gray-400">✕</button>}
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-1.5 text-center text-[10px]">
+                          <div>
+                            <span className="text-gray-400 block">Cant.</span>
                             <input
-                              type="text"
-                              value={item.name}
-                              onChange={e => updateBatchItem(item.id, 'name', e.target.value)}
-                              className="flex-1 bg-white border border-brand-border rounded-xl px-2.5 py-1 text-xs font-bold outline-none"
+                              type="number"
+                              value={it.quantity}
+                              onChange={e => updateBatchItem(it.id, 'quantity', Number(e.target.value))}
+                              className="w-full bg-white border rounded-lg py-1 text-center font-bold"
                             />
-                            {batchItems.length > 1 && (
-                              <button onClick={() => removeBatchItem(item.id)} className="text-gray-400 hover:text-rose-500">✕</button>
-                            )}
                           </div>
-
-                          <div className="grid grid-cols-3 gap-2 text-center">
-                            <div>
-                              <label className="text-[10px] text-gray-400 block">Cant. Salida</label>
-                              <input
-                                type="number"
-                                min="1"
-                                value={item.quantity}
-                                onChange={e => updateBatchItem(item.id, 'quantity', Number(e.target.value))}
-                                className="w-full bg-white border border-brand-border rounded-xl px-2 py-1 text-xs text-center font-bold outline-none"
-                              />
-                            </div>
-                            <div>
-                              <label className="text-[10px] text-gray-400 block">Precio Venta c/u</label>
-                              <input
-                                type="number"
-                                value={item.sellingPrice}
-                                onChange={e => updateBatchItem(item.id, 'sellingPrice', Number(e.target.value))}
-                                className="w-full bg-white border border-brand-border rounded-xl px-2 py-1 text-xs text-center font-black text-emerald-700 outline-none"
-                              />
-                            </div>
-                            <div>
-                              <label className="text-[10px] text-gray-400 block">Empaque c/u (RD$)</label>
-                              <input
-                                type="number"
-                                value={item.packagingCost}
-                                onChange={e => updateBatchItem(item.id, 'packagingCost', Number(e.target.value))}
-                                className="w-full bg-white border border-brand-border rounded-xl px-2 py-1 text-xs text-center font-bold outline-none"
-                              />
-                            </div>
+                          <div>
+                            <span className="text-gray-400 block">Venta RD$</span>
+                            <input
+                              type="number"
+                              value={it.sellingPrice}
+                              onChange={e => updateBatchItem(it.id, 'sellingPrice', Number(e.target.value))}
+                              className="w-full bg-white border rounded-lg py-1 text-center font-bold text-emerald-700"
+                            />
                           </div>
-
-                          <div className="pt-2 border-t border-brand-border/60 flex justify-between items-center text-xs">
-                            <div>
-                              <span className="text-gray-400 text-[10.5px] block">Costo Unitario Total: <b>{formatRD(item.unitTotalCost)}</b></span>
-                              <span className="text-[10px] text-gray-400 font-medium">({formatWholeRD(item.unitBatterCost)} masa + {formatWholeRD(item.packagingCost)} empaque)</span>
-                            </div>
-                            <div className="text-right">
-                              <span className="text-gray-400 text-[10.5px] block">Ganancia en Bolsillo:</span>
-                              <span className="font-black text-emerald-700 text-sm">
-                                +{formatRD(item.unitProfit)} <span className="text-xs font-bold text-brand-darkPink">({item.unitMarginPct}% Margen)</span>
-                              </span>
-                            </div>
+                          <div>
+                            <span className="text-gray-400 block">Empaque RD$</span>
+                            <input
+                              type="number"
+                              value={it.packagingCost}
+                              onChange={e => updateBatchItem(it.id, 'packagingCost', Number(e.target.value))}
+                              className="w-full bg-white border rounded-lg py-1 text-center font-bold"
+                            />
                           </div>
                         </div>
-                      ))}
-                    </div>
+
+                        <div className="flex justify-between pt-1 border-t text-[11px]">
+                          <span className="text-gray-400">Costo: <b>{formatRD(it.totalCostUnit)}</b></span>
+                          <span className="text-emerald-700 font-bold">+{formatRD(it.profit)} ({it.margin}%)</span>
+                        </div>
+                      </div>
+                    ))}
                   </div>
 
-                  {/* Resumen Consolidado */}
-                  <div className="bg-gradient-to-br from-brand-charcoal to-[#2B2B2B] p-5 rounded-3xl text-white shadow-lg space-y-3">
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <span className="text-[10px] uppercase font-bold tracking-widest text-white/50 block">Rendimiento Consolidado de la Tanda</span>
-                        <span className="text-2xl font-black tracking-tight mt-0.5 block">
-                          +{formatRD(batchMetrics.totalBatchProfit)} Ganancia Neta
-                        </span>
-                      </div>
-                      <div className="bg-white/10 px-3 py-1 rounded-full text-right">
-                        <span className="text-xs font-extrabold text-emerald-400">{batchMetrics.totalBatchMarginPct}% Margen Global</span>
-                      </div>
+                  <div className="bg-gradient-to-br from-brand-charcoal to-[#2B2B2B] p-4 rounded-2xl text-white space-y-1">
+                    <div className="flex justify-between items-baseline">
+                      <span className="text-xs text-white/60">Ganancia Consolidada:</span>
+                      <span className="text-lg font-black text-emerald-400">+{formatRD(batchMetrics.totalProfit)} ({batchMetrics.totalMargin}%)</span>
                     </div>
-
-                    <div className="grid grid-cols-2 gap-3 pt-2 border-t border-white/10 text-xs">
-                      <div>
-                        <span className="text-white/60 block text-[11px]">Costo Total Horneado:</span>
-                        <span className="font-bold text-rose-300 text-sm">{formatRD(batchMetrics.totalBatchCost)}</span>
-                      </div>
-                      <div>
-                        <span className="text-white/60 block text-[11px]">Ingreso Esperado:</span>
-                        <span className="font-bold text-emerald-400 text-sm">{formatRD(batchMetrics.totalBatchRevenue)}</span>
-                      </div>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={handleSaveBatchSimulation}
-                      className="w-full bg-brand-pink hover:bg-brand-darkPink text-white text-xs font-bold py-3 rounded-2xl shadow-md transition-all"
-                    >
-                      💾 Guardar Tanda en el Recetario
-                    </button>
                   </div>
                 </div>
               )}
 
-              {/* MODO INDIVIDUAL */}
               {simMode === "single" && (
-                <div className="bg-white p-5 rounded-3xl border border-brand-border space-y-4 shadow-xs">
-                  <div>
-                    <h3 className="text-sm font-bold text-brand-charcoal">Costeo de Postre Único</h3>
-                    <p className="text-xs text-gray-400 mt-0.5">Calcula el precio de venta de una receta directa para un solo molde.</p>
-                  </div>
-
-                  <div>
-                    <label className="text-[11px] font-semibold text-gray-500 block mb-1">Nombre del Postre</label>
-                    <input
-                      type="text"
-                      value={singleName}
-                      onChange={e => setSingleName(e.target.value)}
-                      placeholder="Ej. Flan Tradicional Familiar / Cheesecake"
-                      className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs font-bold text-brand-charcoal outline-none focus:border-brand-pink"
-                    />
-                  </div>
+                <div className="bg-white p-4 rounded-2xl border border-gray-100 space-y-3 shadow-2xs">
+                  <span className="text-xs font-bold text-gray-900 block">Postre Único</span>
+                  <input
+                    type="text"
+                    placeholder="Nombre del postre"
+                    value={singleName}
+                    onChange={e => setSingleName(e.target.value)}
+                    className="w-full bg-[#FAF7F8] border border-gray-200 rounded-xl px-3 py-2 text-xs font-bold outline-none"
+                  />
 
                   <div className="grid grid-cols-3 gap-2">
-                    <div>
-                      <label className="text-[11px] font-semibold text-gray-500 block mb-1">Ingredientes (RD$)</label>
-                      <input
-                        type="number"
-                        value={singleIngredients}
-                        onChange={e => setSingleIngredients(e.target.value)}
-                        placeholder="450"
-                        className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs font-bold outline-none focus:border-brand-pink"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[11px] font-semibold text-gray-500 block mb-1">Empaque & Lazo</label>
-                      <input
-                        type="number"
-                        value={singlePackaging}
-                        onChange={e => setSinglePackaging(e.target.value)}
-                        placeholder="120"
-                        className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs font-bold outline-none focus:border-brand-pink"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[11px] font-semibold text-gray-500 block mb-1">Gas / Mano de obra</label>
-                      <input
-                        type="number"
-                        value={singleLaborGas}
-                        onChange={e => setSingleLaborGas(e.target.value)}
-                        placeholder="50"
-                        className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs font-bold outline-none focus:border-brand-pink"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="text-[11px] font-semibold text-gray-500 block mb-1">Precio Objetivo en Mente (Opcional)</label>
                     <input
                       type="number"
-                      value={singleActualPrice}
-                      onChange={e => setSingleActualPrice(e.target.value)}
-                      placeholder="Ej. 1800"
-                      className="w-full bg-brand-softBg border border-brand-border rounded-xl px-3 py-2 text-xs font-bold text-emerald-700 outline-none"
+                      placeholder="Ingredientes"
+                      value={singleIngredients}
+                      onChange={e => setSingleIngredients(e.target.value)}
+                      className="w-full bg-[#FAF7F8] border border-gray-200 rounded-xl px-2 py-1.5 text-xs outline-none"
+                    />
+                    <input
+                      type="number"
+                      placeholder="Empaque"
+                      value={singlePackaging}
+                      onChange={e => setSinglePackaging(e.target.value)}
+                      className="w-full bg-[#FAF7F8] border border-gray-200 rounded-xl px-2 py-1.5 text-xs outline-none"
+                    />
+                    <input
+                      type="number"
+                      placeholder="Gas / Mano de obra"
+                      value={singleLaborGas}
+                      onChange={e => setSingleLaborGas(e.target.value)}
+                      className="w-full bg-[#FAF7F8] border border-gray-200 rounded-xl px-2 py-1.5 text-xs outline-none"
                     />
                   </div>
 
-                  {/* Slider de Margen */}
-                  <div className="p-4 bg-brand-softPink/50 border border-brand-pink/30 rounded-2xl space-y-2">
-                    <div className="flex justify-between items-center">
-                      <label className="text-xs font-bold text-brand-charcoal">Margen Objetivo Deseado:</label>
-                      <span className="text-sm font-black text-brand-darkPink bg-white px-3 py-0.5 rounded-full border border-brand-pink/40">
-                        {singleMargin}%
-                      </span>
+                  <div className="p-3 bg-[#FDECEF] rounded-xl space-y-1">
+                    <div className="flex justify-between text-xs font-bold">
+                      <span>Margen Deseado:</span>
+                      <span className="text-[#D46B84]">{singleMargin}%</span>
                     </div>
-
                     <input
                       type="range"
                       min="40"
                       max="85"
-                      step="1"
                       value={singleMargin}
                       onChange={e => setSingleMargin(Number(e.target.value))}
-                      className="w-full h-2 bg-brand-border rounded-lg cursor-pointer"
+                      className="w-full h-1.5 bg-gray-200 rounded-lg cursor-pointer"
                     />
                   </div>
 
                   {singleResults && (
-                    <div className="p-4 bg-gradient-to-br from-brand-softPink to-white border border-brand-pink/40 rounded-2xl space-y-3">
-                      <div className="flex justify-between items-baseline">
-                        <div>
-                          <span className="text-[11px] font-bold text-brand-darkPink block">Precio Sugerido ({singleMargin}%):</span>
-                          <span className="text-2xl font-black text-brand-charcoal mt-0.5 block">{formatWholeRD(singleResults.suggestedPrice)}</span>
-                        </div>
-                        <div className="text-right">
-                          <span className="text-[11px] text-gray-500 block">Ganancia Limpia</span>
-                          <span className="text-base font-bold text-emerald-600">+{formatRD(singleResults.profit)}</span>
-                        </div>
+                    <div className="flex justify-between items-baseline pt-2 border-t text-xs">
+                      <div>
+                        <span className="text-gray-400 block text-[10px]">Precio Sugerido:</span>
+                        <span className="text-base font-black text-gray-900">{formatRD(singleResults.suggested)}</span>
                       </div>
-
-                      <button
-                        type="button"
-                        onClick={handleSaveSingleSimulation}
-                        className="w-full bg-brand-charcoal text-white text-xs font-bold py-2.5 rounded-xl"
-                      >
-                        💾 Guardar Receta Individual
-                      </button>
+                      <div className="text-right">
+                        <span className="text-gray-400 block text-[10px]">Ganancia:</span>
+                        <span className="text-sm font-bold text-emerald-600">+{formatRD(singleResults.profit)}</span>
+                      </div>
                     </div>
                   )}
                 </div>
               )}
-
-              {/* Recetario Guardado */}
-              <div className="bg-white p-5 rounded-3xl border border-brand-border space-y-3 shadow-xs">
-                <h3 className="text-sm font-bold text-brand-charcoal">Recetario & Tandas Guardadas</h3>
-                
-                <div className="space-y-2.5">
-                  {(data.simulations || []).map(sim => (
-                    <div key={sim.id} className="p-3.5 rounded-2xl bg-brand-softBg border border-brand-border flex justify-between items-center text-xs">
-                      <div>
-                        <div className="flex items-center space-x-2">
-                          <span className="font-bold text-brand-charcoal">{sim.title}</span>
-                          <span className="text-[9px] bg-white text-brand-darkPink font-bold px-1.5 py-0.5 rounded border border-brand-border">
-                            {sim.type === "batch" ? "Tanda" : "Individual"}
-                          </span>
-                        </div>
-                        <span className="text-[10px] text-gray-400">{formatDate(sim.date)}</span>
-                      </div>
-
-                      <div className="flex items-center space-x-3">
-                        <span className="font-bold text-emerald-700">+{formatWholeRD(sim.totalBatchProfit || sim.profit)}</span>
-                        <button onClick={() => handleDeleteSimulation(sim.id)} className="text-gray-400 hover:text-rose-500">✕</button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
             </div>
           )}
 
           {/* ======================================================== */}
-          {/* BARRA INFERIOR APPLE FIJA (5 COLUMNAS SIN SCROLL)        */}
+          {/* MODAL DE AJUSTES (ABIERTO POR LA TUERCA ⚙️)               */}
           {/* ======================================================== */}
-          <nav id="bottom-tab-bar" className="fixed bottom-0 left-0 right-0 z-50 bg-white/90 backdrop-blur-xl border-t border-brand-border/80 pb-[max(env(safe-area-inset-bottom),10px)] pt-2 shadow-[0_-4px_24px_rgba(0,0,0,0.04)]">
-            <div className="max-w-2xl mx-auto grid grid-cols-5 text-center px-1">
-              
-              <button
-                type="button"
-                onClick={() => setTab("webOrders")}
-                className={`relative flex flex-col items-center justify-center py-1 transition-all ${
-                  tab === 'webOrders' ? 'text-brand-darkPink font-bold' : 'text-gray-400 hover:text-gray-600'
-                }`}
-              >
-                <div className="relative">
-                  <span className="text-lg">📥</span>
-                  {pendingWebOrders.length > 0 && (
-                    <span className="absolute -top-1 -right-2 bg-rose-500 text-white text-[9px] font-black w-4 h-4 rounded-full flex items-center justify-center border-2 border-white shadow-xs animate-pulse">
-                      {pendingWebOrders.length}
-                    </span>
-                  )}
+          {isAjustesOpen && (
+            <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+              <div className="bg-white w-full max-w-sm rounded-3xl p-6 space-y-4 shadow-2xl">
+                <div className="flex justify-between items-center border-b pb-3">
+                  <h3 className="text-base font-extrabold text-gray-900">Configuración</h3>
+                  <button onClick={() => setIsAjustesOpen(false)} className="text-gray-400 text-lg">✕</button>
                 </div>
-                <span className="text-[9.5px] leading-tight block mt-0.5">Pedidos Web</span>
-              </button>
 
+                <div className="space-y-3 text-xs text-gray-600">
+                  <div className="p-3 bg-gray-50 rounded-2xl space-y-1">
+                    <span className="font-bold text-gray-800 block">Estado del Sistema</span>
+                    <p className="text-[11px] text-gray-500">Conectado a Firebase Firestore en tiempo real.</p>
+                  </div>
+
+                  <div className="p-3 bg-[#FAF7F8] rounded-2xl space-y-1">
+                    <span className="font-bold text-gray-800 block">Datos Bancarios</span>
+                    <p className="text-[11px] text-gray-500">Se copian automáticamente al tocar el botón en la cabecera.</p>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => setIsAjustesOpen(false)}
+                  className="w-full bg-brand-charcoal text-white text-xs font-bold py-2.5 rounded-xl shadow-xs"
+                >
+                  Listo
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ======================================================== */}
+          {/* BARRA INFERIOR FIJA APPLE (5 ACCESOS DIRECTOS)           */}
+          {/* ======================================================== */}
+          <nav id="bottom-tab-bar" className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-xl border-t border-gray-100 pb-[max(env(safe-area-inset-bottom),8px)] pt-2 shadow-[0_-4px_24px_rgba(0,0,0,0.03)]">
+            <div className="max-w-md mx-auto grid grid-cols-5 text-center px-1">
+              
               <button
                 type="button"
                 onClick={() => setTab("invoices")}
                 className={`flex flex-col items-center justify-center py-1 transition-all ${
-                  tab === 'invoices' ? 'text-brand-darkPink font-bold' : 'text-gray-400 hover:text-gray-600'
+                  tab === 'invoices' ? 'text-[#D46B84] font-bold' : 'text-gray-400 hover:text-gray-600'
                 }`}
               >
-                <span className="text-lg">📋</span>
+                <div className="relative">
+                  <span className="text-lg">📋</span>
+                  {pendingWebOrders.length > 0 && (
+                    <span className="absolute -top-1 -right-2 bg-rose-500 text-white text-[9px] font-black w-3.5 h-3.5 rounded-full flex items-center justify-center border-2 border-white">
+                      {pendingWebOrders.length}
+                    </span>
+                  )}
+                </div>
                 <span className="text-[9.5px] leading-tight block mt-0.5">Facturas</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setTab("customers")}
+                className={`flex flex-col items-center justify-center py-1 transition-all ${
+                  tab === 'customers' ? 'text-[#D46B84] font-bold' : 'text-gray-400 hover:text-gray-600'
+                }`}
+              >
+                <span className="text-lg">👥</span>
+                <span className="text-[9.5px] leading-tight block mt-0.5">Clientes</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => setTab("menu")}
                 className={`flex flex-col items-center justify-center py-1 transition-all ${
-                  tab === 'menu' ? 'text-brand-darkPink font-bold' : 'text-gray-400 hover:text-gray-600'
+                  tab === 'menu' ? 'text-[#D46B84] font-bold' : 'text-gray-400 hover:text-gray-600'
                 }`}
               >
                 <span className="text-lg">🧁</span>
@@ -1870,7 +1548,7 @@
                 type="button"
                 onClick={() => setTab("finances")}
                 className={`flex flex-col items-center justify-center py-1 transition-all ${
-                  tab === 'finances' ? 'text-brand-darkPink font-bold' : 'text-gray-400 hover:text-gray-600'
+                  tab === 'finances' ? 'text-[#D46B84] font-bold' : 'text-gray-400 hover:text-gray-600'
                 }`}
               >
                 <span className="text-lg">📊</span>
@@ -1881,11 +1559,11 @@
                 type="button"
                 onClick={() => setTab("simulator")}
                 className={`flex flex-col items-center justify-center py-1 transition-all ${
-                  tab === 'simulator' ? 'text-brand-darkPink font-bold' : 'text-gray-400 hover:text-gray-600'
+                  tab === 'simulator' ? 'text-[#D46B84] font-bold' : 'text-gray-400 hover:text-gray-600'
                 }`}
               >
                 <span className="text-lg">🧮</span>
-                <span className="text-[9px] leading-[11px] block mt-0.5 text-center">Simulador de Costos</span>
+                <span className="text-[9.5px] leading-tight block mt-0.5">Simulador</span>
               </button>
 
             </div>
